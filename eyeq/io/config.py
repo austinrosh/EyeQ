@@ -192,7 +192,9 @@ def build_pipeline(cfg: LinkConfig) -> Pipeline:
     for bc in block_cfgs:
         block = registry.create(bc.type, **bc.params)
         if block.name == "channel":
-            block.set_params(reach=cfg.reach_class, package="on" if cfg.package else "off")
+            block.set_params(reach=cfg.reach_class)
+            if cfg.package:  # load the reach-class typical bump-to-bump package loss
+                block.set_params(pkg_loss_db=REACH_PRESETS[(cfg.generation, cfg.reach_class)].pkg_db_nyq)
             if cfg.channel_s4p:
                 block.set_touchstone(cfg.channel_s4p)
         built.append(block)

@@ -34,12 +34,14 @@ def test_build_pipeline_is_canonical():
     assert pipe.names() == CANONICAL_ORDER
 
 
-def test_package_flag_syncs_to_channel():
-    cfg = default_link_config()
+def test_package_flag_loads_reach_package_loss():
+    cfg = default_link_config()  # VSR -> 6 dB bump-to-bump package
     cfg.package = True
     pipe = build_pipeline(cfg)
-    assert pipe.by_name("channel").get("package") == "on"
+    assert pipe.by_name("channel").get("pkg_loss_db") == 6.0
     assert pipe.by_name("channel").get("reach") == "VSR"
+    # off by default
+    assert build_pipeline(default_link_config()).by_name("channel").get("pkg_loss_db") == 0.0
 
 
 def test_unknown_modulation_raises():

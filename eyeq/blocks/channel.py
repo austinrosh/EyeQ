@@ -12,9 +12,10 @@ Selected by ``model``:
 
 The analytical magnitude is anchored to the reach class's *reference* Nyquist, so
 NRZ@112G (56 GHz Nyquist) sees ~2x the loss of PAM4@112G (28 GHz) over the same
-trace. The bump-to-bump package contribution is a separate composable stage
-(toggled by ``package``). Fidelity boundary: neither analytical model reproduces
-MR/LR reflection notches (``ReachClass.models_reflections`` declares this).
+trace. The bump-to-bump package contribution is a separate composable stage,
+tunable in dB via ``pkg_loss_db`` (0 = no package) so it can be swept for package
+co-design. Fidelity boundary: neither analytical model reproduces MR/LR
+reflection notches (``ReachClass.models_reflections`` declares this).
 """
 
 from __future__ import annotations
@@ -40,7 +41,10 @@ class Channel(LTIBlock):
         Param("model", 0, 0, "simple", kind=Kind.STRUCTURAL, choices=_MODELS),
         Param("reach", 0, 0, "VSR", kind=Kind.STRUCTURAL, choices=_REACH),
         Param("loss_scale", 0.0, 2.0, 1.0, kind=Kind.LTI),
-        Param("package", 0, 0, "off", kind=Kind.STRUCTURAL, choices=("off", "on")),
+        # Composable bump-to-bump package loss at Nyquist [dB]; 0 = no package.
+        # Continuous so it can be swept for package co-design. The reach class's
+        # pkg_db_nyq (XSR/XSR+ = 0; VSR/MR/LR ~ 6) is the typical full-package value.
+        Param("pkg_loss_db", 0.0, 15.0, 0.0, unit="dB", kind=Kind.LTI),
     ]
 
     def __init__(self, **overrides):
@@ -87,8 +91,8 @@ class Channel(LTIBlock):
         return s4p_to_transfer(self._touchstone_path, ctx)
 
     def _package_transfer(self, ctx: SimContext) -> NDArray[np.complex128]:
-        """Composable bump-to-bump package stage (reach package adder)."""
-        pkg_db = ctx.reach.pkg_db_nyq
+        """Composable bump-to-bump package stage (tunable loss-at-Nyquist [dB])."""
+        pkg_db = self.get("pkg_loss_db")
         if pkg_db <= 0.0:
             return np.ones(ctx.freq_grid().size, dtype=np.complex128)
         return cm.simple_transfer(ctx.freq_grid(), ctx.reach.ref_nyquist_hz, pkg_db)
@@ -102,6 +106,4 @@ class Channel(LTIBlock):
             H = self._tl_transfer(ctx)
         else:
             H = self._simple_transfer(ctx)
-        if self.get("package") == "on":
-            H = H * self._package_transfer(ctx)
-        return H
+        return H * self._package_transfer(ctx)  # identity when pkg_loss_db == 0

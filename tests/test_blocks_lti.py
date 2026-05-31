@@ -83,14 +83,21 @@ def test_tl_and_simple_share_magnitude_differ_in_phase():
     assert not np.allclose(np.angle(Hs), np.angle(Ht))      # different phase
 
 
-def test_package_stage_adds_loss():
+@pytest.mark.parametrize("pkg_db", [3.0, 6.0, 10.0])
+def test_package_stage_adds_tunable_loss(pkg_db):
     c = ctx(reach="LR")
     base = build_pipeline(default_link_config(reach_class="LR")).by_name("channel")
     pkg = build_pipeline(default_link_config(reach_class="LR")).by_name("channel")
-    pkg.set_params(package="on")
+    pkg.set_params(pkg_loss_db=pkg_db)
     nyq = int(np.argmin(np.abs(c.freq_grid() - c.reach.ref_nyquist_hz)))
     extra = -20 * np.log10(np.abs(pkg.transfer(c)[nyq]) / np.abs(base.transfer(c)[nyq]))
-    assert extra == pytest.approx(c.reach.pkg_db_nyq, abs=0.1)
+    assert extra == pytest.approx(pkg_db, abs=0.1)  # adds exactly the dialed-in loss
+
+
+def test_package_off_by_default():
+    c = ctx(reach="LR")
+    ch = build_pipeline(default_link_config(reach_class="LR")).by_name("channel")
+    assert ch.get("pkg_loss_db") == 0.0  # no package unless dialed in
 
 
 def test_touchstone_model_needs_a_path():
