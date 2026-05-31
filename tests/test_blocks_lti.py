@@ -93,11 +93,12 @@ def test_package_stage_adds_loss():
     assert extra == pytest.approx(c.reach.pkg_db_nyq, abs=0.1)
 
 
-def test_touchstone_not_yet_implemented():
+def test_touchstone_model_needs_a_path():
+    # Touchstone import is implemented (Phase 2a); it needs a .s4p path.
     c = ctx()
     ch = build_pipeline(default_link_config()).by_name("channel")
     ch.set_params(model="touchstone")
-    with pytest.raises(NotImplementedError):
+    with pytest.raises(ValueError):
         ch.transfer(c)
 
 

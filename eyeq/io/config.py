@@ -193,5 +193,7 @@ def build_pipeline(cfg: LinkConfig) -> Pipeline:
         block = registry.create(bc.type, **bc.params)
         if block.name == "channel":
             block.set_params(reach=cfg.reach_class, package="on" if cfg.package else "off")
+            if cfg.channel_s4p:
+                block.set_touchstone(cfg.channel_s4p)
         built.append(block)
     return Pipeline(blocks=built, ctx=ctx)

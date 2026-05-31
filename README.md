@@ -36,8 +36,16 @@ Sheikholeslami, *"High-Speed Wireline Links — Parts I & II"*, IEEE OJSSCS 2024
   frequency cascade, the SBR + cursors, and a PDA statistical eye (NRZ + PAM4).
   Cross-validated against serdespy; sub-ms recompute.
 
-See the build plan for the phased roadmap. Transient engine, Touchstone import,
-DFE/CDR, auto-EQ, and the live dashboard follow in Phases 2-4.
+- **Phase 2a** (Touchstone): synthetic reference `.s4p` generator (one per reach
+  class; MR/LR carry reflection notches) and the importer (`.s4p` -> mixed-mode
+  SDD21 -> simulation-grid transfer), wired into the Channel `touchstone` model.
+  Drop your own measured `.s4p` in `examples/data/` and point a config's
+  `channel_s4p` at it.
+
+See the build plan for the phased roadmap. The transient engine, DFE/CDR,
+auto-EQ, and the live dashboard follow in Phases 2b-4.
+
+To (re)generate the reference channels: `python examples/generate_reference_channels.py`.
 
 ## Layout
 
