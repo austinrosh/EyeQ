@@ -154,6 +154,7 @@ class Dashboard(QtWidgets.QMainWindow):
 
         self._build_toolbar()
         self._update_static_plots()
+        self._resync_panels()  # reflect values build_pipeline set (e.g. channel.reach)
 
         self.timer = QtCore.QTimer(self)
         self.timer.timeout.connect(self._tick)
