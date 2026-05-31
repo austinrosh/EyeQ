@@ -16,10 +16,16 @@ from .statistical import (
     StatEyeResult,
     StatisticalEngine,
 )
+from .transient import TransientEngine, TransientResult
+from .worker import DensitySnapshot, ThreadWorker
 
 __all__ = [
     "StatisticalEngine",
     "CascadeResult",
     "SbrResult",
     "StatEyeResult",
+    "TransientEngine",
+    "TransientResult",
+    "ThreadWorker",
+    "DensitySnapshot",
 ]

@@ -60,3 +60,11 @@ def next_pow2(n: int) -> int:
     while p < n:
         p <<= 1
     return p
+
+
+def fft_convolve(a: NDArray, b: NDArray) -> NDArray[np.float64]:
+    """Linear convolution of two real signals via FFT (fast for long inputs)."""
+    n = a.size + b.size - 1
+    nfft = next_pow2(n)
+    out = np.fft.irfft(np.fft.rfft(a, nfft) * np.fft.rfft(b, nfft), nfft)
+    return out[:n]

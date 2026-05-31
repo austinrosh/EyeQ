@@ -143,19 +143,23 @@ class StatisticalEngine:
         sps = sbr.sps
         m0 = sbr.main_idx
 
-        # Voltage grid sized to the peak-distortion bound (all symbols aligned).
+        # Voltage grid sized to the peak-distortion bound (all symbols aligned),
+        # with an EXACT zero at index v_bins//2 so the per-cursor ifftshift in the
+        # PDF convolution is not off by half a bin (that error accumulates over
+        # the ~20 cursors and biases the mean / distorts the spread).
         v_peak = 1.15 * float(np.sum(np.abs(sbr.cursors))) * float(np.max(np.abs(levels)))
         v_peak = max(v_peak, 1e-6)
-        v = np.linspace(-v_peak, v_peak, v_bins)
-        dv = v[1] - v[0]
+        dv = 2.0 * v_peak / v_bins
+        v = (np.arange(v_bins) - v_bins // 2) * dv
 
         # Per-phase noise/jitter sigmas (volts).
         sigma_amp = self._amplitude_sigma(pipe)
         sigma_t = self._jitter_sigma_s(pipe, ctx)
 
-        pre = int(-sbr.cursor_k.min())
-        post = int(sbr.cursor_k.max())
-        m_range = np.arange(-post, pre + 1)  # cursor offsets (samples = m*sps)
+        # Cursor offsets m: a symbol that is |m| UI away contributes cursor m.
+        # Must match the SBR's cursor convention (k from -pre..+post) exactly, or
+        # the postcursor ISI is mis-counted.
+        m_range = sbr.cursor_k
 
         # Integer sample offsets for each sampling phase across one UI.
         phase_offsets = np.round(np.linspace(-0.5, 0.5, phase_points, endpoint=False) * sps).astype(int)
@@ -169,11 +173,11 @@ class StatisticalEngine:
             slope = self._local_slope(pulse, m0 + delta, ctx.dt)
             sigma = np.hypot(sigma_amp, abs(slope) * sigma_t)
             if sigma > 0:
-                col = self._gaussian_blur(col, dv, sigma)
+                col = np.maximum(self._gaussian_blur(col, dv, sigma), 0.0)
             s = col.sum()
             pdf[pi] = col / s if s > 0 else col
 
-        eye_h, best_pi = self._statistical_eye_height(pdf, dv)
+        eye_h, best_pi = self._eye_height(pdf, v, sbr.main_cursor, levels)
         pda = self._peak_distortion_eye_height(sbr, levels)
         return StatEyeResult(t_axis, v, pdf, eye_h, pda, float(t_axis[best_pi]))
 
@@ -182,6 +186,25 @@ class StatisticalEngine:
         sbr = self.sbr(pipe, cascade)
         eye = self.stat_eye(pipe, sbr, **eye_kw)
         return cascade, sbr, eye
+
+    def decision_snr_db(self, pipe: Pipeline, sbr: SbrResult | None = None) -> float:
+        """Analytic decision-point SNR (no DFE): main^2 / (residual ISI + noise).
+
+        signal = main_cursor^2 * E[a^2];  distortion = sum(isi^2) * E[a^2] + sigma^2.
+        The transient engine's measured MSE-SNR converges to this — a clean
+        cross-engine scaling check.
+        """
+        ctx = pipe.ctx
+        sbr = sbr or self.sbr(pipe)
+        ea2 = float(np.mean(ctx.levels**2))
+        sigma_v = 0.0
+        try:
+            sigma_v = pipe.by_name("noise").get("sigma_mvrms") * 1e-3
+        except KeyError:
+            pass
+        signal = sbr.main_cursor**2 * ea2
+        distortion = float(np.sum(sbr.isi_cursors**2)) * ea2 + sigma_v**2
+        return 10.0 * np.log10(signal / max(distortion, 1e-30))
 
     # ---- helpers ------------------------------------------------------------
     @staticmethod
@@ -217,13 +240,16 @@ class StatisticalEngine:
 
     @staticmethod
     def _gaussian_blur(col, dv, sigma_v) -> NDArray:
+        # Circular convolution with a zero-centered Gaussian kernel. The kernel is
+        # built centered at index n//2 and ifftshift'd so its peak sits at index 0;
+        # the result needs NO final fftshift (a spurious one shifts the whole
+        # distribution by n//2 and collapses the apparent variance).
         n = col.size
-        half = n // 2
-        x = (np.arange(n) - half) * dv
+        x = (np.arange(n) - n // 2) * dv
         k = np.exp(-0.5 * (x / sigma_v) ** 2)
         k /= k.sum()
         K = np.fft.fft(np.fft.ifftshift(k))
-        return np.fft.fftshift(np.fft.ifft(np.fft.fft(col) * K).real)
+        return np.fft.ifft(np.fft.fft(col) * K).real
 
     @staticmethod
     def _local_slope(pulse, center, dt) -> float:
@@ -260,27 +286,37 @@ class StatisticalEngine:
         return max(0.0, opening)
 
     @staticmethod
-    def _eye_openings(col: NDArray, dv: float, frac: float = 1e-3) -> list[float]:
-        """Interior open-gap widths [V] between density clusters in one column."""
-        thr = col.max() * frac
-        idx = np.where(col >= thr)[0]  # "closed" (cluster) bins
-        if idx.size < 2:
-            return []
-        groups = np.split(idx, np.where(np.diff(idx) > 1)[0] + 1)
-        return [(b[0] - a[-1] - 1) * dv for a, b in zip(groups[:-1], groups[1:])]
+    def _opening_at(col: NDArray, v: NDArray, v_thr: float, lim: float) -> float:
+        """Width [V] of the contiguous open (col < lim) interval around v_thr."""
+        dv = v[1] - v[0]
+        j = int(np.clip(round((v_thr - v[0]) / dv), 0, v.size - 1))
+        if col[j] >= lim:
+            return 0.0
+        lo = j
+        while lo > 0 and col[lo - 1] < lim:
+            lo -= 1
+        hi = j
+        while hi < v.size - 1 and col[hi + 1] < lim:
+            hi += 1
+        return (hi - lo) * dv
 
-    def _statistical_eye_height(self, pdf: NDArray, dv: float) -> tuple[float, int]:
-        """Worst (inner) eye opening at the phase that maximizes it.
+    def _eye_height(
+        self, pdf: NDArray, v: NDArray, main_cursor: float, levels: NDArray, frac: float = 1e-3
+    ) -> tuple[float, int]:
+        """Worst inner-eye opening over the M-1 decision thresholds, best phase.
 
-        At each sampling phase the PDF separates into PAM-level clusters; the
-        inner eye is the smallest gap between adjacent clusters. The eye height
-        is that inner gap at the best sampling phase. Unlike the peak-distortion
-        bound, this reflects the *probabilistic* opening an eye diagram shows.
+        The thresholds sit at the level midpoints scaled by the main cursor
+        (``main_cursor * (L_i + L_{i+1}) / 2``); measuring the open gap *around a
+        known threshold* is robust to the ragged ISI comb a Monte Carlo histogram
+        shows (unlike cluster-gap detection), so the statistical PDF and the
+        transient histogram score consistently.
         """
+        thr_v = abs(main_cursor) * 0.5 * (levels[:-1] + levels[1:])
         best_h, best_pi = 0.0, 0
         for pi in range(pdf.shape[0]):
-            gaps = self._eye_openings(pdf[pi], dv)
-            inner = min(gaps) if gaps else 0.0
+            col = pdf[pi]
+            lim = col.max() * frac
+            inner = min((self._opening_at(col, v, tv, lim) for tv in thr_v), default=0.0)
             if inner > best_h:
                 best_h, best_pi = inner, pi
         return best_h, best_pi

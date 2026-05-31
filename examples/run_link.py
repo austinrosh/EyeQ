@@ -16,17 +16,17 @@ from pathlib import Path
 
 import numpy as np
 
-from eyeq.engines import StatisticalEngine
+from eyeq.engines import StatisticalEngine, TransientEngine
 from eyeq.io import build_pipeline, default_link_config, load, save
 
 HERE = Path(__file__).resolve().parent
 ENG = StatisticalEngine()
+TRAN = TransientEngine()
 _RAMP = " .:-=+*#%@"
 
 
-def ascii_eye(eye, rows: int = 17, cols: int = 48) -> str:
-    """Render the [phase, voltage] PDF as a compact ASCII eye (two UI wide)."""
-    pdf = eye.pdf
+def ascii_eye(pdf, rows: int = 17, cols: int = 48) -> str:
+    """Render a [phase, voltage] density as a compact ASCII eye (two UI wide)."""
     # tile two UI horizontally and orient voltage as rows (high at top)
     two = np.vstack([pdf, pdf])  # [2*phase, v]
     img = two.T[::-1]            # [v, 2*phase]
@@ -60,13 +60,23 @@ def report(scenario: str, modulation: str, reach: str, note: str = "") -> None:
           f"(ISI/main = {sbr.isi_sum/abs(sbr.main_cursor):.2f})")
     print(f"statistical eye height       : {eye.eye_height_v*1e3:6.1f} mV "
           f"(best phase {eye.best_phase_ui:+.2f} UI)")
-    print(f"peak-distortion bound        : {eye.pda_bound_v*1e3:6.1f} mV")
-    print("statistical eye (2 UI):")
-    print(ascii_eye(eye))
+
+    # Keystone: the transient Monte Carlo eye reproduces the statistical eye.
+    res = TRAN.run_batch(pipe, n_symbols=200_000, sbr=sbr, v=eye.v,
+                         rng=np.random.default_rng(0))
+    print(f"decision SNR  analytic/measured: {ENG.decision_snr_db(pipe, sbr):5.2f} / "
+          f"{res.mse_snr_db:5.2f} dB   (SER {res.ser:.1e})")
+    print("statistical eye (left) vs transient density eye (right), 2 UI each:")
+    _side_by_side(ascii_eye(eye.pdf), ascii_eye(res.density))
 
     path = HERE / f"{scenario}.yaml"
     save(cfg, path)
     assert load(path) == cfg, "config did not round-trip"
+
+
+def _side_by_side(a: str, b: str) -> None:
+    for la, lb in zip(a.splitlines(), b.splitlines()):
+        print(f"{la}   {lb}")
 
 
 def eq_sweep() -> None:

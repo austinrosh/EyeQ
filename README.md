@@ -41,9 +41,14 @@ Sheikholeslami, *"High-Speed Wireline Links — Parts I & II"*, IEEE OJSSCS 2024
   SDD21 -> simulation-grid transfer), wired into the Channel `touchstone` model.
   Drop your own measured `.s4p` in `examples/data/` and point a config's
   `channel_s4p` at it.
+- **Phase 2b** (transient engine): vectorized LTI-only Monte Carlo density eye,
+  MSE-SNR + SER, and a threaded worker with a double-buffered snapshot and
+  coalesced parameter updates. Keystone validated: the density eye's distribution
+  matches the statistical eye (std to <3%, decision SNR to <0.3 dB);
+  >= 1.5M UI/s throughput.
 
-See the build plan for the phased roadmap. The transient engine, DFE/CDR,
-auto-EQ, and the live dashboard follow in Phases 2b-4.
+See the build plan for the phased roadmap. The DFE/CDR nonlinear tail, auto-EQ,
+and the live dashboard follow in Phases 3-4.
 
 To (re)generate the reference channels: `python examples/generate_reference_channels.py`.
 
