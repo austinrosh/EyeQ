@@ -93,37 +93,74 @@ class TransientEngine:
             cols = (np.arange(sps)[None, :] - shift[:, None]) % sps
             windows = np.take_along_axis(windows, cols, axis=1)
 
-        # Histogram into the density eye (single vectorized bincount over phase x v).
         if v is None:
             v_peak = 1.1 * float(np.abs(windows).max())
             v = np.linspace(-v_peak, v_peak, self.v_bins)
         nb, dv = v.size, v[1] - v[0]
-        edges = np.concatenate([v - 0.5 * dv, [v[-1] + 0.5 * dv]])
-        bidx = np.clip(np.searchsorted(edges, windows, side="right") - 1, 0, nb - 1)
-        phase = np.broadcast_to(np.arange(sps), bidx.shape)
-        counts = np.bincount((phase * nb + bidx).ravel(), minlength=sps * nb)
-        density = counts.reshape(sps, nb).astype(float)
-        # Light voltage smoothing: the Monte Carlo histogram under-samples the
-        # discrete ISI comb; a real eye diagram has finite resolution anyway.
+        main_cursor = sbr.main_cursor
+        levels = ctx.levels
+        dec_col = self._decision_col(pipe, sps, half)
+
+        # Decision-directed tail (DFE) goes through the Numba kernel; the LTI-only
+        # case stays fully vectorized.
+        dfe = pipe.by_name("dfe") if "dfe" in pipe.names() else None
+        if dfe is not None and dfe.is_active():
+            density, mse_snr, ser = self._dfe_eye(
+                windows, sidx, ctx, sbr, dfe.taps(), dec_col, v, dv, nb
+            )
+        else:
+            density, mse_snr, ser = self._lti_eye(
+                windows, sidx, levels, main_cursor, dec_col, v, dv, nb
+            )
+
         if smooth_bins > 0:
             density = np.stack([self._stat._gaussian_blur(c, dv, smooth_bins * dv) for c in density])
         density = np.maximum(density, 0.0)  # FFT blur leaves tiny negative round-off
         density = density / np.maximum(density.sum(1, keepdims=True), 1e-30)
 
-        # Metrics at the decision point (main sampling phase).
-        samp = windows[:, half]
-        main_cursor = sbr.main_cursor
-        ideal = ctx.levels[sidx] * main_cursor
-        err = samp - ideal
-        mse_snr = 10.0 * np.log10(np.mean(ideal**2) / max(np.mean(err**2), 1e-30))
-        dec = np.argmin(np.abs(samp[:, None] - ctx.levels[None, :] * main_cursor), axis=1)
-        ser = float(np.mean(dec != sidx))
-
-        eye_h, best_pi = self._stat._eye_height(density, v, sbr.main_cursor, ctx.levels)
+        eye_h, best_pi = self._stat._eye_height(density, v, main_cursor, levels)
         t_ui = offsets / sps
         return TransientResult(
             t_ui, v, density, eye_h, float(t_ui[best_pi]), float(mse_snr), ser, int(w)
         )
+
+    # -- eye builders ---------------------------------------------------------
+    @staticmethod
+    def _lti_eye(windows, sidx, levels, main_cursor, dec_col, v, dv, nb):
+        sps = windows.shape[1]
+        edges = np.concatenate([v - 0.5 * dv, [v[-1] + 0.5 * dv]])
+        bidx = np.clip(np.searchsorted(edges, windows, side="right") - 1, 0, nb - 1)
+        phase = np.broadcast_to(np.arange(sps), bidx.shape)
+        density = np.bincount((phase * nb + bidx).ravel(), minlength=sps * nb)
+        density = density.reshape(sps, nb).astype(float)
+
+        samp = windows[:, dec_col]
+        ideal = levels[sidx] * main_cursor
+        mse_snr = 10.0 * np.log10(np.mean(ideal**2) / max(np.mean((samp - ideal) ** 2), 1e-30))
+        dec = np.argmin(np.abs(samp[:, None] - levels[None, :] * main_cursor), axis=1)
+        return density, float(mse_snr), float(np.mean(dec != sidx))
+
+    def _dfe_eye(self, windows, sidx, ctx, sbr, taps, dec_col, v, dv, nb):
+        from ._kernels import dfe_eye  # lazy: numba only when the DFE runs
+
+        sps = windows.shape[1]
+        levels = ctx.levels
+        thr = sbr.main_cursor * 0.5 * (levels[:-1] + levels[1:])
+        hist2d = np.zeros((sps, nb))
+        errors, sum_err2, sum_sig2 = dfe_eye(
+            np.ascontiguousarray(windows), levels[sidx], sidx.astype(np.int64),
+            np.ascontiguousarray(taps), levels, np.ascontiguousarray(thr),
+            int(dec_col), float(sbr.main_cursor), float(v[0]), float(dv), int(nb), hist2d,
+        )
+        mse_snr = 10.0 * np.log10(sum_sig2 / max(sum_err2, 1e-30))
+        return hist2d, float(mse_snr), float(errors) / windows.shape[0]
+
+    @staticmethod
+    def _decision_col(pipe, sps, half) -> int:
+        ph = 0.0
+        if "cdr_slicer" in pipe.names():
+            ph = pipe.by_name("cdr_slicer").get("sample_phase_ui")
+        return int(np.clip(half + round(ph * sps), 0, sps - 1))
 
     # -- helpers --------------------------------------------------------------
     @staticmethod

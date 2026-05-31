@@ -16,6 +16,7 @@ from pathlib import Path
 
 import numpy as np
 
+from eyeq.analysis.optimize import optimize_link
 from eyeq.engines import StatisticalEngine, TransientEngine
 from eyeq.io import build_pipeline, default_link_config, load, save
 
@@ -92,12 +93,32 @@ def eq_sweep() -> None:
         print(f"{fz:>12.2f} {pk:>12.2f} {eye.eye_height_v*1e3:>15.1f}")
 
 
+def auto_eq_demo(mod: str = "PAM4", reach: str = "LR") -> None:
+    """Closed eye -> one-click MMSE auto-EQ (RX FFE + DFE) -> open eye."""
+    p = build_pipeline(default_link_config(modulation=mod, reach_class=reach))
+    p.apply_params({"ctle": {"fz": 0.35, "fp": 1.0, "dc_gain": -2.0}})
+    _, sbr0, eye0 = ENG.compute(p)
+    r0 = TRAN.run_batch(p, n_symbols=200_000, sbr=sbr0, v=eye0.v, rng=np.random.default_rng(0))
+
+    res = optimize_link(p)
+    _, sbr1, eye1 = ENG.compute(p)
+    r1 = TRAN.run_batch(p, n_symbols=200_000, sbr=sbr1, v=eye1.v, rng=np.random.default_rng(0))
+
+    print(f"\n{'='*60}\nAuto-EQ — 112G {mod} {reach}: CTLE only  ->  +MMSE RX FFE ({res.rxffe_taps.size}t) "
+          f"+ DFE ({res.dfe_taps.size}t)\n{'='*60}")
+    print(f"before:  SNR {r0.mse_snr_db:5.2f} dB   SER {r0.ser:.1e}   eye {r0.eye_height_v*1e3:5.1f} mV")
+    print(f"after :  SNR {r1.mse_snr_db:5.2f} dB   SER {r1.ser:.1e}   eye {r1.eye_height_v*1e3:5.1f} mV")
+    print("transient eye  before (left)  vs  after auto-EQ (right), 2 UI each:")
+    _side_by_side(ascii_eye(r0.density), ascii_eye(r1.density))
+
+
 def main() -> None:
-    # XSR closes a clean LTI-only eye; VSR/PAM4 is marginal without a DFE (Phase 3).
+    # XSR closes a clean LTI-only eye; VSR/PAM4 is marginal without a DFE.
     report("112g_pam4", "PAM4", "XSR", note="open with CTLE alone")
-    report("112g_pam4_vsr", "PAM4", "VSR", note="marginal — needs DFE (Phase 3)")
+    report("112g_pam4_vsr", "PAM4", "VSR", note="marginal — needs DFE")
     report("112g_nrz", "NRZ", "XSR", note="wide open")
     eq_sweep()
+    auto_eq_demo("PAM4", "LR")
 
 
 if __name__ == "__main__":

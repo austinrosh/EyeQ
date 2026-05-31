@@ -47,8 +47,13 @@ Sheikholeslami, *"High-Speed Wireline Links — Parts I & II"*, IEEE OJSSCS 2024
   matches the statistical eye (std to <3%, decision SNR to <0.3 dB);
   >= 1.5M UI/s throughput.
 
-See the build plan for the phased roadmap. The DFE/CDR nonlinear tail, auto-EQ,
-and the live dashboard follow in Phases 3-4.
+- **Phase 3** (nonlinear tail): DFE with a Numba `njit` feedback kernel, CDR/slicer
+  with a controllable sample phase, TX/RX jitter + noise injected in the loop, and
+  one-click closed-form **MMSE auto-EQ** (RX FFE Eqs. 6-7 + DFE post-cursor
+  cancellation). The DFE closes a known-ISI eye; auto-EQ opens a fully-closed LR
+  eye (SER 0.5 -> 0); >= 6.5M UI/s at 112G and 448G with a long DFE.
+
+See the build plan for the phased roadmap. The live dashboard follows in Phase 4.
 
 To (re)generate the reference channels: `python examples/generate_reference_channels.py`.
 
