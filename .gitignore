@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Virtual envs
+.venv/
+venv/
+env/
+
+# Test / tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.numba_cache/
+__pycache__.numba/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+
+# Data — keep small synthetic fixtures in-repo, ignore large measured channels by default
+*.s4p
+*.s2p
+!tests/fixtures/*.s4p
+!examples/data/*.s4p

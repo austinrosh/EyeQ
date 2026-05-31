@@ -1,0 +1,32 @@
+version: 1
+data_rate_gbps: 112.0
+sps: 32
+modulation: PAM4
+generation: 112G
+reach_class: VSR
+package: false
+rng_seed: 0
+channel_s4p: null
+blocks:
+- type: Source
+  params: {}
+- type: TXFFE
+  params: {}
+- type: TXJitter
+  params: {}
+- type: Channel
+  params: {}
+- type: Noise
+  params: {}
+- type: CTLE
+  params: {}
+- type: RXFFE
+  params: {}
+- type: DFE
+  params: {}
+- type: CDRSlicer
+  params: {}
+analysis:
+  avg_factor: 3
+  v_bins: 256
+  phase_points: 32
