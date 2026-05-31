@@ -52,8 +52,24 @@ Sheikholeslami, *"High-Speed Wireline Links — Parts I & II"*, IEEE OJSSCS 2024
   one-click closed-form **MMSE auto-EQ** (RX FFE Eqs. 6-7 + DFE post-cursor
   cancellation). The DFE closes a known-ISI eye; auto-EQ opens a fully-closed LR
   eye (SER 0.5 -> 0); >= 6.5M UI/s at 112G and 448G with a long DFE.
+- **Phase 4** (live dashboard): a PyQtGraph + PySide6 dashboard — the density eye,
+  frequency cascade, SBR, and amplitude histogram, with a slider panel
+  auto-generated from each block's parameter schema, an Auto-EQ button, modulation
+  /rate selectors, start/stop, and config load/save. The statistical engine
+  recomputes on the GUI thread (LTI sliders); the transient engine runs on a worker
+  thread pulled at ~30 FPS, so dragging never blocks.
 
-See the build plan for the phased roadmap. The live dashboard follows in Phase 4.
+## Run the dashboard
+
+```bash
+pip install -e ".[dev,sim,gui]"
+python -m eyeq.gui.dashboard                      # boots a 112G PAM4 VSR link
+python -m eyeq.gui.dashboard --config examples/112g_pam4.yaml
+```
+
+Click **Start**, then **Auto-EQ** to watch a closed eye open. See the build plan
+for the phased roadmap (Phase 5: 224/448G sweeps, CDR loop filters, crosstalk,
+jitter decomposition, TX FFE auto-EQ, exports).
 
 To (re)generate the reference channels: `python examples/generate_reference_channels.py`.
 

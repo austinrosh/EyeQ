@@ -55,20 +55,27 @@ class ThreadWorker:
         self._lock = threading.Lock()
         self._pending: dict[str, dict[str, Any]] = {}
         self._pending_ctx = None
+        self._dirty = False
         self._running = False
         self._thread: threading.Thread | None = None
         self._front: DensitySnapshot | None = None
         self._seq = 0
         self._rng = np.random.default_rng(pipe.ctx.rng_seed)
+        self._stat = StatisticalEngine()
 
-        # Fixed voltage grid so accumulation is consistent across batches.
-        stat = StatisticalEngine()
-        self._sbr = stat.sbr(pipe)
-        v_peak = max(1.15 * float(np.sum(np.abs(self._sbr.cursors))), 1e-6)
-        self._v = np.linspace(-v_peak, v_peak, self.engine.v_bins)
+        self._sbr = None
+        self._v: NDArray | None = None
         self._lti_dirty = False
         self._accum: NDArray | None = None
         self._n_batches = 0
+        self._refresh()  # initial SBR + voltage grid
+
+    def _refresh(self) -> None:
+        """Recompute the SBR and a voltage grid sized to it; reset accumulation."""
+        self._sbr = self._stat.sbr(self.pipe)
+        v_peak = max(1.15 * float(np.sum(np.abs(self._sbr.cursors))), 1e-6)
+        self._v = np.linspace(-v_peak, v_peak, self.engine.v_bins)
+        self._accum = None
 
     # -- lifecycle ------------------------------------------------------------
     def start(self) -> None:
@@ -101,6 +108,11 @@ class ThreadWorker:
         with self._lock:
             self._pending_ctx = ctx
 
+    def mark_dirty(self) -> None:
+        """Signal an LTI change made directly on the shared pipeline (GUI path)."""
+        with self._lock:
+            self._dirty = True
+
     def latest(self) -> DensitySnapshot | None:
         with self._lock:
             return self._front
@@ -110,21 +122,22 @@ class ThreadWorker:
         with self._lock:
             updates, self._pending = self._pending, {}
             ctx, self._pending_ctx = self._pending_ctx, None
+            ext_dirty, self._dirty = self._dirty, False
         if ctx is not None:
             self.pipe.ctx = ctx
             self._lti_dirty = True
-            self._accum = None
         if updates:
             kinds = self.pipe.apply_params(updates)
             if Kind.LTI in kinds or Kind.STRUCTURAL in kinds:
                 self._lti_dirty = True
-                self._accum = None  # refresh the eye on an LTI change
+        if ext_dirty:
+            self._lti_dirty = True
 
     def _loop(self) -> None:
         while self._running:
             self._drain()
-            if self._lti_dirty or self._sbr is None:
-                self._sbr = StatisticalEngine().sbr(self.pipe)
+            if self._lti_dirty:
+                self._refresh()  # new SBR + voltage grid; clears accumulation
                 self._lti_dirty = False
             res = self.engine.run_batch(
                 self.pipe, n_symbols=self.batch_symbols, sbr=self._sbr, rng=self._rng, v=self._v
