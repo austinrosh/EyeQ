@@ -9,3 +9,17 @@
 * :mod:`eyeq.engines.worker`     — the threaded worker + double-buffered density
   snapshot + coalesced parameter mailbox that hosts the transient engine. (2b)
 """
+
+from .statistical import (
+    CascadeResult,
+    SbrResult,
+    StatEyeResult,
+    StatisticalEngine,
+)
+
+__all__ = [
+    "StatisticalEngine",
+    "CascadeResult",
+    "SbrResult",
+    "StatEyeResult",
+]

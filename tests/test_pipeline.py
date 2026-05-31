@@ -20,9 +20,12 @@ def test_lti_tail_split():
     assert [b.name for b in pipe.nonlinear_tail()] == ["dfe", "cdr_slicer"]
 
 
-def test_collect_impulses_empty_in_phase0():
-    # All blocks are passthrough stubs -> no concatenable impulses yet.
-    assert _pipe().collect_impulses() == []
+def test_collect_impulses_returns_lti_prefix_transfers():
+    # The four LTI blocks (txffe, channel, ctle, rxffe) contribute impulses;
+    # stochastic blocks (source, txjitter, noise) return None and are skipped.
+    impulses = _pipe().collect_impulses()
+    assert len(impulses) == 4
+    assert all(h.shape == (_pipe().ctx.fft_len(),) for h in impulses)
 
 
 def test_init_states_covers_all_blocks():

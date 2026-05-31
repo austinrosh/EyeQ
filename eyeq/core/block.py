@@ -123,3 +123,22 @@ class BlockBase:
 
     def __repr__(self) -> str:  # pragma: no cover - debug aid
         return f"{type(self).__name__}(name={self.name!r}, params={self._values})"
+
+
+class LTIBlock(BlockBase):
+    """Base for blocks defined by a frequency-domain transfer function.
+
+    Subclasses implement :meth:`transfer` (a one-sided complex transfer on
+    ``ctx.freq_grid()``); the impulse response is derived from it. The
+    statistical engine multiplies the per-block transfers directly.
+    """
+
+    is_lti = True
+
+    def transfer(self, ctx: SimContext) -> NDArray:  # pragma: no cover - abstract
+        raise NotImplementedError(f"{self.name}: transfer() not implemented")
+
+    def impulse_response(self, ctx: SimContext) -> NDArray:
+        from ..spectral import transfer_to_impulse
+
+        return transfer_to_impulse(self.transfer(ctx), ctx.fft_len())

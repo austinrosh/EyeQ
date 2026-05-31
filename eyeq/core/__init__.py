@@ -15,7 +15,7 @@ block implementation. These are the load-bearing interfaces:
 
 from .context import Modulation, ReachClass, SimContext, REACH_PRESETS
 from .schema import Kind, Param, Scale
-from .block import Block, BlockBase, BlockState
+from .block import Block, BlockBase, BlockState, LTIBlock
 from .pipeline import CANONICAL_ORDER, Pipeline
 from . import registry
 
@@ -30,6 +30,7 @@ __all__ = [
     "Block",
     "BlockBase",
     "BlockState",
+    "LTIBlock",
     "CANONICAL_ORDER",
     "Pipeline",
     "registry",

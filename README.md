@@ -29,8 +29,15 @@ Sheikholeslami, *"High-Speed Wireline Links — Parts I & II"*, IEEE OJSSCS 2024
 
 ## Status
 
-Phase 0 (skeleton): core contracts, stubbed blocks, config save/load, tests.
-See the build plan for the phased roadmap.
+- **Phase 0** (skeleton): core contracts, stubbed blocks, config save/load, tests.
+- **Phase 1** (statistical core): TX FFE + Gaussian driver, two analytical channel
+  models (`simple` minimum-phase + `tl` transmission-line) with a composable
+  package stage, the Eq.-22 CTLE, RX FFE; the statistical engine producing the
+  frequency cascade, the SBR + cursors, and a PDA statistical eye (NRZ + PAM4).
+  Cross-validated against serdespy; sub-ms recompute.
+
+See the build plan for the phased roadmap. Transient engine, Touchstone import,
+DFE/CDR, auto-EQ, and the live dashboard follow in Phases 2-4.
 
 ## Layout
 

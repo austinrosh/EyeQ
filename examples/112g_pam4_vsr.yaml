@@ -1,9 +1,9 @@
 version: 1
 data_rate_gbps: 112.0
 sps: 32
-modulation: NRZ
+modulation: PAM4
 generation: 112G
-reach_class: XSR
+reach_class: VSR
 package: false
 rng_seed: 0
 channel_s4p: null

@@ -25,13 +25,28 @@ def test_block_satisfies_protocol(type_name):
 
 
 @pytest.mark.parametrize("type_name", ALL_TYPES)
-def test_stub_engine_hooks_are_passthrough(type_name):
+def test_process_is_passthrough(type_name):
+    # The transient sample-domain path is not implemented until Phase 3.
     block = registry.create(type_name)
     state = block.init_state(CTX)
     sentinel = object()
     y, st = block.process(sentinel, state, CTX)
     assert y is sentinel and st is state
-    assert block.impulse_response(CTX) is None  # Phase 0: all stubs
+
+
+# LTI blocks now expose a real transfer/impulse; stochastic & nonlinear blocks
+# contribute None (modeled as PDFs or run in the transient tail instead).
+_LTI_BLOCKS = {"TXFFE", "Channel", "CTLE", "RXFFE"}
+
+
+@pytest.mark.parametrize("type_name", ALL_TYPES)
+def test_impulse_response_present_only_for_lti_blocks(type_name):
+    block = registry.create(type_name)
+    h = block.impulse_response(CTX)
+    if type_name in _LTI_BLOCKS:
+        assert h is not None and h.shape == (CTX.fft_len(),)
+    else:
+        assert h is None
 
 
 def test_numeric_param_clamps():
