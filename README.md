@@ -67,9 +67,15 @@ python -m eyeq.gui.dashboard                      # boots a 112G PAM4 VSR link
 python -m eyeq.gui.dashboard --config examples/112g_pam4.yaml
 ```
 
-Click **Start**, then **Auto-EQ** to watch a closed eye open. See the build plan
-for the phased roadmap (Phase 5: 224/448G sweeps, CDR loop filters, crosstalk,
-jitter decomposition, TX FFE auto-EQ, exports).
+Click **Start**, then **Auto-EQ** to watch a closed eye open.
+
+- **Phase 5a** (performance assessment): BER, horizontal/vertical **bathtub curves**,
+  and **COM** (channel operating margin) from the statistical eye — error rates far
+  below what the Monte Carlo eye can reach. The dashboard's voltage panel shows the
+  amplitude histogram plus the vertical bathtub, with a live BER / COM readout.
+
+See the build plan for the remaining Phase 5 work (TX FFE auto-EQ + online LMS,
+a real CDR loop; crosstalk / package-`.s4p` / jitter decomposition optional).
 
 To (re)generate the reference channels: `python examples/generate_reference_channels.py`.
 

@@ -21,6 +21,7 @@ from pathlib import Path
 from PySide6 import QtCore, QtWidgets
 from pyqtgraph.dockarea import Dock, DockArea
 
+from ..analysis import ber as _ber
 from ..analysis.optimize import optimize_link
 from ..core.schema import Kind
 from ..engines import StatisticalEngine, ThreadWorker
@@ -45,6 +46,7 @@ class Controller:
     # -- engine state ---------------------------------------------------------
     def recompute_statistical(self):
         self.cascade, self.sbr, self.eye = self.stat.compute(self.pipe)
+        self.ber = _ber.assess(self.stat, self.pipe, self.sbr, phase_points=33, v_bins=512)
 
     def latest(self):
         return self.worker.latest()
@@ -204,6 +206,7 @@ class Dashboard(QtWidgets.QMainWindow):
     def _update_static_plots(self):
         self.cascade.update_cascade(self.ctrl.cascade)
         self.sbr.update_sbr(self.ctrl.sbr)
+        self.hist.update_bathtub(self.ctrl.ber)
 
     def _resync_panels(self):
         for name, panel in self.panels.items():
