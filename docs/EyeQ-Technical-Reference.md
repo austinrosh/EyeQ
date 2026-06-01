@@ -130,7 +130,7 @@ Source → TX FFE → TX Jitter → Channel(+pkg) → Noise → CTLE → RX FFE 
 | Method | Frequency cascade → SBR → PDA eye (analytic PDFs) | Monte-Carlo symbol stream → 2-D density eye |
 | Determinism | Deterministic | Stochastic (seeded) |
 | Speed | Sub-millisecond recompute | Batched, continuous (≥1.5 M UI/s) |
-| BER reach | Down to ~$10^{-18}$ (tail integration) | Floor ~$10^{-5}$ (run-length limited) |
+| BER reach | Down to ~$`10^{-18}`$ (tail integration) | Floor ~$`10^{-5}`$ (run-length limited) |
 | Nonlinear tail | Not modeled in the analytic BER (linear eye) | DFE + CDR + slicer in a Numba kernel |
 | Drives | BER / COM / bathtubs / report | Live density eye / MSE-SNR / recovered phase |
 
@@ -160,28 +160,32 @@ and all derived, loss-aware sizes. Changing rate or modulation constructs a *new
 class Modulation(Enum): NRZ = 2; PAM4 = 4     # value = number of levels
 ```
 
-- `n_levels` $M$ = 2 (NRZ) or 4 (PAM-4); `bits_per_symbol` $= \log_2 M$ = 1 or 2.
-- **Normalized PAM levels** span $[-1, 1]$:
+- `n_levels` $`M`$ = 2 (NRZ) or 4 (PAM-4); `bits_per_symbol` $`= \log_2 M`$ = 1 or 2.
+- **Normalized PAM levels** span $`[-1, 1]`$:
 
-$$\text{NRZ: } \{-1,\, +1\}, \qquad \text{PAM-4: } \left\{-1,\, -\tfrac13,\, +\tfrac13,\, +1\right\}.$$
+```math
+\text{NRZ: } \{-1,\, +1\}, \qquad \text{PAM-4: } \left\{-1,\, -\tfrac13,\, +\tfrac13,\, +1\right\}.
+```
 
-  The level step is $\Delta = 2/(M-1)$ ($\Delta=2$ for NRZ, $\Delta=2/3$ for PAM-4).
+  The level step is $`\Delta = 2/(M-1)`$ ($`\Delta=2`$ for NRZ, $`\Delta=2/3`$ for PAM-4).
 
 ### 3.2 Derived quantities
 
-With baud (symbol) rate $f_b$ [sym/s] and samples-per-UI `sps` (default 32):
+With baud (symbol) rate $`f_b`$ [sym/s] and samples-per-UI `sps` (default 32):
 
-$$f_s = f_b\cdot\text{sps}, \quad f_\text{nyq} = \tfrac{f_b}{2}, \quad \text{UI} = \tfrac1{f_b}, \quad
-dt = \tfrac1{f_s}, \quad R_\text{data} = f_b\cdot\log_2 M.$$
+```math
+f_s = f_b\cdot\text{sps}, \quad f_\text{nyq} = \tfrac{f_b}{2}, \quad \text{UI} = \tfrac1{f_b}, \quad
+dt = \tfrac1{f_s}, \quad R_\text{data} = f_b\cdot\log_2 M.
+```
 
-Constructed from a *data* rate via `SimContext.from_data_rate(data_rate_gbps, mod, …)` → $f_b =
-R_\text{data}/\log_2 M$. The one-sided frequency grid is $f \in [0, f_s/2]$ with $n/2+1$ points
-(`freq_grid()`), and $f/f_\text{nyq}$ normalization (`f_over_fnyq`).
+Constructed from a *data* rate via `SimContext.from_data_rate(data_rate_gbps, mod, …)` →
+$`f_b = R_\text{data}/\log_2 M`$. The one-sided frequency grid is $`f \in [0, f_s/2]`$ with
+$`n/2+1`$ points (`freq_grid()`), and $`f/f_\text{nyq}`$ normalization (`f_over_fnyq`).
 
 **Key NRZ-vs-PAM-4 point:** the *physical* channel is the channel; modulation only decides where Nyquist
 lands. NRZ@112G has a 56 GHz Nyquist while PAM-4@112G has 28 GHz, so the same trace shows ~2× the
 loss-at-Nyquist for NRZ. Reach presets describe the channel at a *reference* Nyquist (28 GHz for 112G);
-the effective loss is evaluated at $f_\text{nyq}$ at runtime.
+the effective loss is evaluated at $`f_\text{nyq}`$ at runtime.
 
 ### 3.3 Reach classes (112G presets, reference Nyquist 28 GHz)
 
@@ -190,29 +194,29 @@ from Shakiba Part I, Table 1.
 
 | Reach | Trace loss @ 28 GHz [dB] | Package [dB] | Target BER | Models reflections |
 |------:|:---:|:---:|:---:|:---:|
-| XSR  | 8  | 0 | $10^{-9}$ | No |
-| XSR+ | 13 | 0 | $10^{-6}$ | No |
-| VSR  | 16 | 6 | $10^{-6}$ | No |
-| MR   | 20 | 6 | $10^{-6}$ | **Yes** |
-| LR   | 28 | 6 | $10^{-4}$ | **Yes** |
+| XSR  | 8  | 0 | $`10^{-9}`$ | No |
+| XSR+ | 13 | 0 | $`10^{-6}`$ | No |
+| VSR  | 16 | 6 | $`10^{-6}`$ | No |
+| MR   | 20 | 6 | $`10^{-6}`$ | **Yes** |
+| LR   | 28 | 6 | $`10^{-4}`$ | **Yes** |
 
 `models_reflections=True` (MR/LR) declares the fidelity regime: the smooth analytical channel models
 loss budget + slope only; MR/LR reflection notches require measured/synthetic Touchstone S-parameters.
 
 ### 3.4 Loss-driven sizing ("rate is metadata")
 
-All buffer sizes are functions of the loss budget $L = $ `loss_db_nyq`, **not** the rate — the rate only
+All buffer sizes are functions of the loss budget $`L = `$ `loss_db_nyq`, **not** the rate — the rate only
 sets the time scale, absorbed by `sps`. So NRZ and PAM-4 at the same reach get identical sizes.
 
 | Quantity | Formula | Clamp |
 |---|---|---|
-| SBR window (UI) | $\text{round}(8 + 1.2L)$ | $[16, 128]$ |
-| Pre-cursors | $\text{round}(2 + 0.10L)$ | $[2, 8]$ |
-| Post-cursors | $\text{round}(4 + 0.50L)$ | $[6, 64]$ |
-| TX FFE (pre, post) | $(1,\ \text{round}(0.10L))$ | post $\in[1,3]$ |
-| RX FFE taps | $\text{round}(4 + 0.30L)$ (forced odd) | $[5, 31]$ |
-| DFE taps | $\text{round}(0.6L)$ | $[1, 32]$ |
-| FFT length | $\text{nextpow2}(\max(4096,\ 4\cdot\text{SBR samples}))$ | — |
+| SBR window (UI) | $`\text{round}(8 + 1.2L)`$ | $`[16, 128]`$ |
+| Pre-cursors | $`\text{round}(2 + 0.10L)`$ | $`[2, 8]`$ |
+| Post-cursors | $`\text{round}(4 + 0.50L)`$ | $`[6, 64]`$ |
+| TX FFE (pre, post) | $`(1,\ \text{round}(0.10L))`$ | post $`\in[1,3]`$ |
+| RX FFE taps | $`\text{round}(4 + 0.30L)`$ (forced odd) | $`[5, 31]`$ |
+| DFE taps | $`\text{round}(0.6L)`$ | $`[1, 32]`$ |
+| FFT length | $`\text{nextpow2}(\max(4096,\ 4\cdot\text{SBR samples}))`$ | — |
 
 `sbr_len_samples = sbr_len_ui · sps`. Default `sps = 32` (16 = "fast/live").
 
@@ -304,10 +308,10 @@ idx = rng.integers(0, ctx.mod.n_levels, n_symbols)   # i.i.d. uniform over M lev
 return ctx.levels[idx], idx                            # (normalized voltages, level indices)
 ```
 
-The present implementation draws symbols **i.i.d. uniform** over the $M$ levels (the `pattern` enum is
+The present implementation draws symbols **i.i.d. uniform** over the $`M`$ levels (the `pattern` enum is
 declared for forthcoming deterministic PRBS/PRQS LFSR generation with Gray mapping). The BER↔SER
 relation (§10) assumes **Gray coding** — one PAM-symbol error ≈ one bit error — so
-$\text{BER} \approx \text{SER}/\log_2 M$.
+$`\text{BER} \approx \text{SER}/\log_2 M`$.
 
 ### 5.2 TX FFE + driver (`blocks/txffe.py`)
 
@@ -326,23 +330,31 @@ filter — together the transmitter's LTI transfer.
 
 **Main tap** (keeps unit peak headroom; Part I, Table 2):
 
-$$c_0 = \max\!\big(0.6,\ 1 - (|c_\text{pre}| + |c_\text{post}|)\big).$$
+```math
+c_0 = \max\!\big(0.6,\ 1 - (|c_\text{pre}| + |c_\text{post}|)\big).
+```
 
-**FIR de-emphasis** (taps $c_k$ at positions $k$ relative to the main index, no net bulk delay):
+**FIR de-emphasis** (taps $`c_k`$ at positions $`k`$ relative to the main index, no net bulk delay):
 
-$$H_\text{ffe}(f) = \sum_k c_k\, e^{-j 2\pi f (k - k_\text{main})\,\text{UI}}.$$
+```math
+H_\text{ffe}(f) = \sum_k c_k\, e^{-j 2\pi f (k - k_\text{main})\,\text{UI}}.
+```
 
-**Gaussian driver low-pass** (Part I, Eqs. 18–19) with rise time $t_r = \text{tr}\cdot\text{UI}$ (the `tr_ui` parameter, in UI):
+**Gaussian driver low-pass** (Part I, Eqs. 18–19) with rise time $`t_r = \text{tr}\cdot\text{UI}`$ (the `tr_ui` parameter, in UI):
 
-$$H_\text{drv}(f) = \exp\!\Big[-\big(\pi f / a\big)^2\Big], \qquad a = 0.8 / t_r.$$
+```math
+H_\text{drv}(f) = \exp\!\Big[-\big(\pi f / a\big)^2\Big], \qquad a = 0.8 / t_r.
+```
 
 **Total transfer** (each component independently bypassable):
 
-$$H_\text{tx}(f) = \big[\,H_\text{ffe}(f)\ \text{if FFE enabled, else } 1\,\big]\cdot
-\big[\,H_\text{drv}(f)\ \text{if driver enabled, else } 1\,\big].$$
+```math
+H_\text{tx}(f) = \big[\,H_\text{ffe}(f)\ \text{if FFE enabled, else } 1\,\big]\cdot
+\big[\,H_\text{drv}(f)\ \text{if driver enabled, else } 1\,\big].
+```
 
 The transfer is a dimensionless shape; the launch voltage `swing` is applied when the engine scales the
-SBR/eye to volts (the outermost PAM level launches $\pm\,\text{swing}/2$). Explicit taps set by auto-EQ
+SBR/eye to volts (the outermost PAM level launches $`\pm\,\text{swing}/2`$). Explicit taps set by auto-EQ
 override `[pre, main, post]`; dragging `pre/post/swing` reverts to manual mode.
 
 ### 5.3 TX jitter (`blocks/txjitter.py`)
@@ -351,8 +363,8 @@ override `[pre, main, post]`; dragging `pre/post/swing` reverts to manual mode.
 |---|---|---|---|---|
 | `rj_mui` | 0–50 | 0 | mUI | NONLINEAR (`also_statistical`) |
 
-Random (Gaussian) jitter. RMS in seconds: $\sigma_t = r_j\cdot 10^{-3}\cdot\text{UI}$, where $r_j$ is the `rj_mui` parameter (mUI). The
-transient engine applies a per-symbol circular sample shift $\sim \mathcal N(0, (\sigma_t f_s)^2)$; the
+Random (Gaussian) jitter. RMS in seconds: $`\sigma_t = r_j\cdot 10^{-3}\cdot\text{UI}`$, where $`r_j`$ is the `rj_mui` parameter (mUI). The
+transient engine applies a per-symbol circular sample shift $`\sim \mathcal N(0, (\sigma_t f_s)^2)`$; the
 statistical engine converts it to amplitude noise via the local slope (§7.5).
 
 ### 5.4 Channel (`blocks/channel.py`, `channel_model.py`, `io/touchstone.py`, `io/synth_channel.py`)
@@ -366,39 +378,47 @@ Three loss models behind one interface plus a composable package stage.
 | `loss_scale` | 0–2 | 1.0 | × | LTI |
 | `pkg_loss_db` | 0–15 | 0 | dB | LTI |
 
-**Loss split** (skin + dielectric), with $x = f/f_\text{ref-nyq}$ and budget $L$ (= `loss_db_nyq · loss_scale`):
+**Loss split** (skin + dielectric), with $`x = f/f_\text{ref-nyq}`$ and budget $`L`$ (= `loss_db_nyq · loss_scale`):
 
-$$\text{IL}(f)\,[\text{dB}] = L\big[\,\underbrace{0.6\sqrt{x}}_{\text{skin}} + \underbrace{0.4\,x}_{\text{dielectric}}\big],
-\qquad \text{IL}(f_\text{ref-nyq}) = L\ \text{by design}.$$
+```math
+\text{IL}(f)\,[\text{dB}] = L\big[\,\underbrace{0.6\sqrt{x}}_{\text{skin}} + \underbrace{0.4\,x}_{\text{dielectric}}\big],
+\qquad \text{IL}(f_\text{ref-nyq}) = L\ \text{by design}.
+```
 
 **`simple` model** — minimum-phase transfer with the loss-budget magnitude:
 
-$$|H(f)| = 10^{-\text{IL}(f)/20}, \qquad H(f) = \mathcal{MP}\{|H(f)|\}$$
+```math
+|H(f)| = 10^{-\text{IL}(f)/20}, \qquad H(f) = \mathcal{MP}\{|H(f)|\}
+```
 
-where $\mathcal{MP}$ is the minimum-phase reconstruction (cepstral homomorphic method, §6).
+where $`\mathcal{MP}`$ is the minimum-phase reconstruction (cepstral homomorphic method, §6).
 
 **`tl` (transmission-line) model** — same magnitude, physical phase. With nepers
-$\alpha = \text{IL}/8.6859$ and the skin/dielectric attenuations $\alpha_\text{skin}, \alpha_\text{diel}$:
+$`\alpha = \text{IL}/8.6859`$ and the skin/dielectric attenuations $`\alpha_\text{skin}, \alpha_\text{diel}`$:
 
-$$\beta(f) = \alpha_\text{skin} + \frac{2}{\pi}\alpha_\text{diel}\ln\!\frac{f}{f_\text{ref-nyq}} + 2\pi f\,\tau,
-\qquad H(f) = e^{-\alpha(f)}\,e^{-j\beta(f)},$$
+```math
+\beta(f) = \alpha_\text{skin} + \frac{2}{\pi}\alpha_\text{diel}\ln\!\frac{f}{f_\text{ref-nyq}} + 2\pi f\,\tau,
+\qquad H(f) = e^{-\alpha(f)}\,e^{-j\beta(f)},
+```
 
-with bulk transport delay $\tau = 4\,\text{UI}$ (`_TL_DELAY_UI`). The $\frac{2}{\pi}\ln(\cdot)$ term is
+with bulk transport delay $`\tau = 4\,\text{UI}`$ (`_TL_DELAY_UI`). The $`\frac{2}{\pi}\ln(\cdot)`$ term is
 the Kramers–Krönig phase of the dielectric loss.
 
 **Package stage** — a separate composable LTI factor (bump-to-bump adder), applied as the same loss
-formula at strength `pkg_loss_db`; $1$ when zero. Overall: $H_\text{total} = H_\text{model}\cdot
-H_\text{pkg}$.
+formula at strength `pkg_loss_db`; $`1`$ when zero. Overall:
+$`H_\text{total} = H_\text{model}\cdot H_\text{pkg}`$.
 
 **`touchstone` model** — an imported `.s4p`. The single-ended 4-port S-matrix is converted to the
 differential SDD21 via the orthonormal mixed-mode transform
 
-$$M = \frac{1}{\sqrt2}\begin{bmatrix} 1&-1&0&0\\ 0&0&1&-1\\ 1&1&0&0\\ 0&0&1&1\end{bmatrix},\qquad
-S_\text{mm} = M\,S_\text{se}\,M^{\!\top},\quad \text{SDD21} = S_\text{mm}[1,0].$$
+```math
+M = \frac{1}{\sqrt2}\begin{bmatrix} 1&-1&0&0\\ 0&0&1&-1\\ 1&1&0&0\\ 0&0&1&1\end{bmatrix},\qquad
+S_\text{mm} = M\,S_\text{se}\,M^{\!\top},\quad \text{SDD21} = S_\text{mm}[1,0].
+```
 
 SDD21 is interpolated (magnitude & unwrapped phase separately) onto the sim grid, extrapolated to 0
-above the file band, and clipped to $|H|\le 1$ (passivity). MR/LR reflection notches are synthesized as
-delayed echoes $H_\text{refl}(f) = 1 - d\,e^{-j2\pi f/\Delta_\text{spacing}}$ (nulls at integer
+above the file band, and clipped to $`|H|\le 1`$ (passivity). MR/LR reflection notches are synthesized as
+delayed echoes $`H_\text{refl}(f) = 1 - d\,e^{-j2\pi f/\Delta_\text{spacing}}`$ (nulls at integer
 multiples of the spacing): MR = (0.35 @ 40 GHz); LR = (0.50 @ 38 GHz, 0.30 @ 22 GHz). Synthetic
 reference `.s4p` files are generated per reach class by `examples/generate_reference_channels.py`.
 
@@ -409,14 +429,14 @@ reference `.s4p` files are generated per reach class by `examples/generate_refer
 | `sigma_mvrms` | 0–50 | 0 | mVrms | NONLINEAR (`also_statistical`) |
 
 Additive Gaussian noise at the RX input. The decision-point noise is **front-end-referred** (§7.4): the
-input-referred $\sigma$ is amplified by the CTLE × RX-FFE front end, so an equalizing RX FFE pays a noise
+input-referred $`\sigma`$ is amplified by the CTLE × RX-FFE front end, so an equalizing RX FFE pays a noise
 penalty while a TX FFE (operating on clean symbols) does not — this is what lets the TX/RX split be
 optimized meaningfully.
 
 ### 5.6 CTLE (`blocks/ctle.py`)
 
 Continuous-time linear equalizer, a zero-pole-gain rational (Part I, Eq. 22), parameterized with
-frequencies normalized to $f/f_\text{nyq}$.
+frequencies normalized to $`f/f_\text{nyq}`$.
 
 | Param | Range | Default | Unit | Kind |
 |---|---|---|---|---|
@@ -427,14 +447,16 @@ frequencies normalized to $f/f_\text{nyq}$.
 | `fpp` | 0.5–3 | 1.5 | ×f_nyq | LTI |
 | `zeta_pp` | 0.3–2 | 0.7 | — | LTI |
 
-$$H_\text{ctle}(s) = \underbrace{10^{\text{dc gain}/20}}_{\text{dc}}\cdot
+```math
+H_\text{ctle}(s) = \underbrace{10^{\text{dc gain}/20}}_{\text{dc}}\cdot
 \frac{1 + s/\omega_z}{1 + s/\omega_p}\cdot
-\frac{\omega_{pp}^2}{s^2 + 2\zeta\,\omega_{pp}\,s + \omega_{pp}^2},\quad s = j2\pi f,$$
+\frac{\omega_{pp}^2}{s^2 + 2\zeta\,\omega_{pp}\,s + \omega_{pp}^2},\quad s = j2\pi f,
+```
 
-with $\omega_z = 2\pi\,\text{fz}\,f_\text{nyq}$, $\omega_p = 2\pi\,\text{fp}\,f_\text{nyq}$,
-$\omega_{pp} = 2\pi\,\text{fpp}\,f_\text{nyq}$, and $\zeta$ is the `zeta_pp` parameter (quality factor
-$Q = 1/2\zeta$). A real zero/pole pair ($\text{fz} < \text{fp}$ boosts toward Nyquist) plus a resonant
-section. When `enabled = off`, $H = 1$ (true bypass).
+with $`\omega_z = 2\pi\,\text{fz}\,f_\text{nyq}`$, $`\omega_p = 2\pi\,\text{fp}\,f_\text{nyq}`$,
+$`\omega_{pp} = 2\pi\,\text{fpp}\,f_\text{nyq}`$, and $`\zeta`$ is the `zeta_pp` parameter (quality factor
+$`Q = 1/2\zeta`$). A real zero/pole pair ($`\text{fz} < \text{fp}`$ boosts toward Nyquist) plus a resonant
+section. When `enabled = off`, $`H = 1`$ (true bypass).
 
 ### 5.7 RX FFE (`blocks/rxffe.py`)
 
@@ -447,9 +469,11 @@ A symbol-spaced FIR in the LTI chain; default identity (single unit main tap).
 | `adapt` | off/lms/sign-lms | off | NONLINEAR |
 | `mu` | 0–0.1 | 0 | NONLINEAR |
 
-$$H_\text{rxffe}(f) = \sum_k w_k\, e^{-j2\pi f (k - k_\text{main})\,\text{UI}}.$$
+```math
+H_\text{rxffe}(f) = \sum_k w_k\, e^{-j2\pi f (k - k_\text{main})\,\text{UI}}.
+```
 
-Taps $w_k$ come from the closed-form MMSE auto-EQ (§9) or online LMS. `enabled = off` ⇒ $H = 1$ (exact
+Taps $`w_k`$ come from the closed-form MMSE auto-EQ (§9) or online LMS. `enabled = off` ⇒ $`H = 1`$ (exact
 bypass, preserving solved taps).
 
 ### 5.8 DFE (`blocks/dfe.py`)
@@ -465,9 +489,9 @@ Decision-feedback equalizer — the first nonlinear-tail block (`is_tail = True`
 | `adapt` | off/lms/sign-lms | off | — | NONLINEAR |
 | `mu` | 0–0.1 | 0 | — | NONLINEAR |
 
-Tap vector (volts): $\text{taps}[0] = h_1\cdot10^{-3}$, $\text{taps}[1{:}]$ from auto-EQ/LMS. Feedback at
-symbol $k$: $\;\text{fb} = \sum_i \text{taps}[i]\cdot \hat a_{k-i}$, where $\hat a$ is the decided
-normalized level. `is_active()` ⇒ $n_\text{taps}>0$ and any tap $\neq 0$.
+Tap vector (volts): $`\text{taps}[0] = h_1\cdot10^{-3}`$, $`\text{taps}[1{:}]`$ from auto-EQ/LMS. Feedback at
+symbol $`k`$: $`\;\text{fb} = \sum_i \text{taps}[i]\cdot \hat a_{k-i}`$, where $`\hat a`$ is the decided
+normalized level. `is_active()` ⇒ $`n_\text{taps}>0`$ and any tap $`\neq 0`$.
 
 ### 5.9 CDR / slicer (`blocks/cdr_slicer.py`)
 
@@ -490,16 +514,16 @@ detector equations: §8.4.
 
 | Function | Definition |
 |---|---|
-| `to_db(x)` | $20\log_{10}\max(\lvert x\rvert, \varepsilon)$, $\varepsilon=10^{-300}$ |
-| `from_db(d)` | $10^{d/20}$ |
-| `transfer_to_impulse(H, n)` | `np.fft.irfft(H, n)` — one-sided transfer → length-$n$ real impulse |
+| `to_db(x)` | $`20\log_{10}\max(\lvert x\rvert, \varepsilon)`$, $`\varepsilon=10^{-300}`$ |
+| `from_db(d)` | $`10^{d/20}`$ |
+| `transfer_to_impulse(H, n)` | `np.fft.irfft(H, n)` — one-sided transfer → length-$`n`$ real impulse |
 | `minimum_phase_spectrum(mag, n)` | Cepstral homomorphic reconstruction (below) |
-| `next_pow2(n)` | smallest power of two $\ge n$ |
+| `next_pow2(n)` | smallest power of two $`\ge n`$ |
 | `fft_convolve(a, b)` | linear convolution via FFT |
 
-**Minimum-phase reconstruction** — from a one-sided magnitude $|H|$: build the even-symmetric full-band
-magnitude, take the real cepstrum $c[n]=\mathrm{IFFT}(\ln|H|)$, apply the causal fold window
-($w[0]=1$, $w[1..n/2-1]=2$, $w[n/2]=1$), and reconstruct $H = \exp(\mathrm{FFT}(c\cdot w))$ (Oppenheim
+**Minimum-phase reconstruction** — from a one-sided magnitude $`|H|`$: build the even-symmetric full-band
+magnitude, take the real cepstrum $`c[n]=\mathrm{IFFT}(\ln|H|)`$, apply the causal fold window
+($`w[0]=1`$, $`w[1..n/2-1]=2`$, $`w[n/2]=1`$), and reconstruct $`H = \exp(\mathrm{FFT}(c\cdot w))`$ (Oppenheim
 & Schafer). This yields the unique causal, stable response consistent with the given magnitude.
 
 ---
@@ -513,59 +537,67 @@ Fires on any `LTI`/`STRUCTURAL` change. Returns `(CascadeResult, SbrResult, Stat
 For each LTI block, evaluate `transfer(ctx)` on the shared `freq_grid()` and multiply cumulatively into
 three traces:
 
-$$H_\text{channel} = H_\text{chan}\cdot H_\text{pkg}, \quad
+```math
+H_\text{channel} = H_\text{chan}\cdot H_\text{pkg}, \quad
 H_\text{tx,chan} = H_\text{tx}\cdot H_\text{channel}, \quad
-H_\text{tx,chan,rx} = H_\text{tx,chan}\cdot H_\text{ctle}\cdot H_\text{rxffe}.$$
+H_\text{tx,chan,rx} = H_\text{tx,chan}\cdot H_\text{ctle}\cdot H_\text{rxffe}.
+```
 
-Nyquist loss $= -(20\log_{10}|H_\text{chan}(f_\text{nyq})| - 20\log_{10}|H_\text{chan}(0)|)$.
+Nyquist loss $`= -(20\log_{10}|H_\text{chan}(f_\text{nyq})| - 20\log_{10}|H_\text{chan}(0)|)`$.
 
 ### 7.2 Single-bit response (SBR) and cursors
 
-Impulse to the decision point $h = \mathrm{irfft}(H_\text{tx,chan,rx})$, held one UI to a pulse, scaled
-to volts by $\text{swing}/2$. With $m_0 = \arg\max(\text{pulse})$ and cursor offsets $k\in[-\text{pre},
-+\text{post}]$, the cursors are $\text{pulse}[m_0 + k\cdot\text{sps}]$; `cursor_k=0` is the **main
-cursor** $c_0$.
+Impulse to the decision point $`h = \mathrm{irfft}(H_\text{tx,chan,rx})`$, held one UI to a pulse, scaled
+to volts by $`\text{swing}/2`$. With $`m_0 = \arg\max(\text{pulse})`$ and cursor offsets
+$`k\in[-\text{pre}, +\text{post}]`$, the cursors are $`\text{pulse}[m_0 + k\cdot\text{sps}]`$;
+`cursor_k=0` is the **main cursor** $`c_0`$.
 
 ### 7.3 PDA statistical eye (Part II, Sec. IV)
 
 At each sampling phase across one UI, the received-voltage PDF is the convolution of every cursor's
-symbol distribution (uniform over the $M$ PAM levels), blurred by amplitude noise and slope-converted
+symbol distribution (uniform over the $`M`$ PAM levels), blurred by amplitude noise and slope-converted
 jitter:
 
-$$f_v(v;\,t') = \Big[\,\circledast_{k}\ p_k(v)\,\Big] \circledast g_\sigma(v),\qquad
-p_k(v) = \tfrac1M\sum_{L\in\text{levels}} \delta\!\big(v - c_k(t')\,L\big),$$
+```math
+f_v(v;\,t') = \Big[\,\circledast_{k}\ p_k(v)\,\Big] \circledast g_\sigma(v),\qquad
+p_k(v) = \tfrac1M\sum_{L\in\text{levels}} \delta\!\big(v - c_k(t')\,L\big),
+```
 
-where $c_k(t')$ is cursor $k$ sampled at phase $t'$, and $g_\sigma$ is a Gaussian of width
-$\sigma = \sqrt{\sigma_\text{amp}^2 + (\text{slope}\cdot\sigma_t)^2}$. The convolution is done in the FFT
+where $`c_k(t')`$ is cursor $`k`$ sampled at phase $`t'`$, and $`g_\sigma`$ is a Gaussian of width
+$`\sigma = \sqrt{\sigma_\text{amp}^2 + (\text{slope}\cdot\sigma_t)^2}`$. The convolution is done in the FFT
 domain on a fixed, centered voltage grid (exact zero at the center bin to avoid half-bin bias). Evaluated
 at ~32 phases → a 3-D PDF eye.
 
 ### 7.4 Front-end-referred noise
 
-$$\sigma_\text{amp} = \sigma_\text{in}\cdot\sqrt{\ \overline{|H_\text{ctle}(f)\,H_\text{rxffe}(f)|^2}\ }\Big|_{f\le f_\text{nyq}},
-\qquad \sigma_\text{in} = 10^{-3}\,\sigma_\text{mVrms}.$$
+```math
+\sigma_\text{amp} = \sigma_\text{in}\cdot\sqrt{\ \overline{|H_\text{ctle}(f)\,H_\text{rxffe}(f)|^2}\ }\Big|_{f\le f_\text{nyq}},
+\qquad \sigma_\text{in} = 10^{-3}\,\sigma_\text{mVrms}.
+```
 
-(where $\sigma_\text{mVrms}$ is the `sigma_mvrms` parameter, in mVrms.)
+(where $`\sigma_\text{mVrms}`$ is the `sigma_mvrms` parameter, in mVrms.)
 
 ### 7.5 Jitter as amplitude noise
 
-Local slope $\;\text{slope} = \dfrac{\text{pulse}[c{+}1]-\text{pulse}[c{-}1]}{2\,dt}$, converting timing
-jitter $\sigma_t$ to equivalent amplitude noise $|\text{slope}|\cdot\sigma_t$.
+Local slope $`\;\text{slope} = \dfrac{\text{pulse}[c{+}1]-\text{pulse}[c{-}1]}{2\,dt}`$, converting timing
+jitter $`\sigma_t`$ to equivalent amplitude noise $`|\text{slope}|\cdot\sigma_t`$.
 
 ### 7.6 Eye height and decision SNR
 
-Inner-eye opening at a phase = the worst (minimum) open gap over the $M-1$ thresholds
-$\;\theta_i = |c_0|\cdot\tfrac12(L_i + L_{i+1})$, measured as the contiguous interval around $\theta_i$
-where the PDF is below $\text{frac}\cdot\max$ ($\text{frac}=10^{-3}$). The best phase maximizes it.
+Inner-eye opening at a phase = the worst (minimum) open gap over the $`M-1`$ thresholds
+$`\;\theta_i = |c_0|\cdot\tfrac12(L_i + L_{i+1})`$, measured as the contiguous interval around $`\theta_i`$
+where the PDF is below $`\text{frac}\cdot\max`$ ($`\text{frac}=10^{-3}`$). The best phase maximizes it.
 `_eye_height_at_col` evaluates the opening at a *specific* phase column (used for the eye-height at the
 CDR-recovered phase, §8.5).
 
 **Analytic decision SNR** (no DFE; the transient MSE-SNR converges to this):
 
-$$\text{SNR}_\text{dec} = 10\log_{10}\frac{c_0^2\,\mathbb E[a^2]}{\sum_{k\neq0}c_k^2\,\mathbb E[a^2] + \sigma_\text{amp}^2},
-\qquad \mathbb E[a^2] = \overline{\text{levels}^2}.$$
+```math
+\text{SNR}_\text{dec} = 10\log_{10}\frac{c_0^2\,\mathbb E[a^2]}{\sum_{k\neq0}c_k^2\,\mathbb E[a^2] + \sigma_\text{amp}^2},
+\qquad \mathbb E[a^2] = \overline{\text{levels}^2}.
+```
 
-**Deterministic peak-distortion bound** (pessimistic): $\;|c_0|\,\Delta - 2\sum_{k\neq0}|c_k|$.
+**Deterministic peak-distortion bound** (pessimistic): $`\;|c_0|\,\Delta - 2\sum_{k\neq0}|c_k|`$.
 
 ---
 
@@ -573,66 +605,82 @@ $$\text{SNR}_\text{dec} = 10\log_{10}\frac{c_0^2\,\mathbb E[a^2]}{\sum_{k\neq0}c
 
 ### 8.1 Eye-window construction (vectorized)
 
-With symbol stream $a$ and the cursor-vs-phase matrix $C[m,j] = \text{SBR}[m_0 + m\cdot\text{sps} + j]$,
+With symbol stream $`a`$ and the cursor-vs-phase matrix $`C[m,j] = \text{SBR}[m_0 + m\cdot\text{sps} + j]`$,
 each per-UI window is a single matmul over the (~20) cursors:
 
-$$\text{window}[k, j] = \sum_m a[k-m]\,C[m, j] = (A\,C)[k, j].$$
+```math
+\text{window}[k, j] = \sum_m a[k-m]\,C[m, j] = (A\,C)[k, j].
+```
 
 This uses the exact cursor set the statistical eye uses (so the two engines agree), far cheaper than a
-full $N\cdot\text{sps}$ FFT.
+full $`N\cdot\text{sps}`$ FFT.
 
 ### 8.2 Noise & jitter injection
 
-$$\text{window} \mathrel{+}= \mathcal N(0, \sigma_\text{amp}^2); \qquad
-\text{window}[k,:] \leftarrow \text{window}[k, (j - s_k)\bmod\text{sps}],\ \ s_k\sim\mathcal N(0,(\text{rj}\cdot\text{sps})^2).$$
+```math
+\text{window} \mathrel{+}= \mathcal N(0, \sigma_\text{amp}^2); \qquad
+\text{window}[k,:] \leftarrow \text{window}[k, (j - s_k)\bmod\text{sps}],\ \ s_k\sim\mathcal N(0,(\text{rj}\cdot\text{sps})^2).
+```
 
 ### 8.3 LTI-only fast path vs nonlinear kernel
 
 If the DFE is disabled/inactive **and** the CDR is static, the engine stays fully vectorized: bin
 `window[:, dec_col]` into the 2-D histogram, and
 
-$$\text{MSE-SNR} = 10\log_{10}\frac{\overline{(\text{ideal})^2}}{\overline{(\text{samp}-\text{ideal})^2}},
-\qquad \text{ideal} = \text{levels}[\text{sym}]\cdot c_0.$$
+```math
+\text{MSE-SNR} = 10\log_{10}\frac{\overline{(\text{ideal})^2}}{\overline{(\text{samp}-\text{ideal})^2}},
+\qquad \text{ideal} = \text{levels}[\text{sym}]\cdot c_0.
+```
 
 Otherwise the Numba kernel `dfe_eye` runs the slicer + DFE + CDR per symbol.
 
 ### 8.4 The nonlinear kernel (`_kernels.py`)
 
-**DFE feedback & slicer.** With decision history $\hat a$ (decided normalized levels), thresholds
-$\theta_t = c_0\cdot\tfrac12(L_t+L_{t+1})$:
+**DFE feedback & slicer.** With decision history $`\hat a`$ (decided normalized levels), thresholds
+$`\theta_t = c_0\cdot\tfrac12(L_t+L_{t+1})`$:
 
-$$\text{samp} = \text{window}[k,\text{col}] - \sum_i \text{taps}[i]\,\hat a_{k-i},\qquad
-\hat d = \max\{\,t : \text{samp} \ge \theta_t\,\}\ \text{(else 0)}.$$
+```math
+\text{samp} = \text{window}[k,\text{col}] - \sum_i \text{taps}[i]\,\hat a_{k-i},\qquad
+\hat d = \max\{\,t : \text{samp} \ge \theta_t\,\}\ \text{(else 0)}.
+```
 
-**CDR phase detectors** (error term $e_t$; PI loop below):
+**CDR phase detectors** (error term $`e_t`$; PI loop below):
 
-- *Mueller–Müller* (baud-rate), normalized to $O(1)$:
+- *Mueller–Müller* (baud-rate), normalized to $`O(1)`$:
 
-$$e_t = \frac{\text{samp}_k\,\hat a_{k-1} - \text{samp}_{k-1}\,\hat a_k}{c_0^2 + \varepsilon}.$$
+```math
+e_t = \frac{\text{samp}_k\,\hat a_{k-1} - \text{samp}_{k-1}\,\hat a_k}{c_0^2 + \varepsilon}.
+```
 
-- *Bang-bang* (Alexander) — with edge sample $e_\text{edge}$ at `col − sps/2` and transition midpoint
-  $\text{mid} = \tfrac12(\hat a_{k-1}+\hat a_k)\,c_0$:
+- *Bang-bang* (Alexander) — with edge sample $`e_\text{edge}`$ at `col − sps/2` and transition midpoint
+  $`\text{mid} = \tfrac12(\hat a_{k-1}+\hat a_k)\,c_0`$:
 
-$$\text{rising } (\hat a_k>\hat a_{k-1}):\ e_t = \begin{cases}-1 & e_\text{edge} > \text{mid}\ (\text{late})\\ +1 & \text{else}\end{cases};\quad
+```math
+\text{rising } (\hat a_k>\hat a_{k-1}):\ e_t = \begin{cases}-1 & e_\text{edge} > \text{mid}\ (\text{late})\\ +1 & \text{else}\end{cases};\quad
 \text{falling}:\ e_t = \begin{cases}+1 & e_\text{edge} > \text{mid}\ (\text{early})\\ -1 & \text{else}\end{cases};\quad
-\text{no transition}: e_t = 0.$$
+\text{no transition}: e_t = 0.
+```
 
-- *PI loop* (with anti-windup clamp to $\pm\text{sps}/2$):
+- *PI loop* (with anti-windup clamp to $`\pm\text{sps}/2`$):
 
-$$\text{integ} \mathrel{+}= e_t, \qquad \phi_\text{cdr} \mathrel{+}= k_p\,e_t + k_i\,\text{integ}.$$
+```math
+\text{integ} \mathrel{+}= e_t, \qquad \phi_\text{cdr} \mathrel{+}= k_p\,e_t + k_i\,\text{integ}.
+```
 
-**DFE adaptation** (decision-directed, $\text{err} = \text{samp} - \hat d\cdot c_0$):
+**DFE adaptation** (decision-directed, $`\text{err} = \text{samp} - \hat d\cdot c_0`$):
 
-$$\text{LMS: } \text{taps}[i] \mathrel{+}= \mu\,\text{err}\,\hat a_{k-i};\qquad
-\text{Sign-LMS: } \text{taps}[i] \mathrel{+}= \mu\,\operatorname{sgn}(\text{err})\,\operatorname{sgn}(\hat a_{k-i}).$$
+```math
+\text{LMS: } \text{taps}[i] \mathrel{+}= \mu\,\text{err}\,\hat a_{k-i};\qquad
+\text{Sign-LMS: } \text{taps}[i] \mathrel{+}= \mu\,\mathrm{sgn}(\text{err})\,\mathrm{sgn}(\hat a_{k-i}).
+```
 
 Adapted taps persist across batches. **Histogram** accumulates the post-feedback voltage at every phase
-$j$; **SER** = fraction of $\hat d \neq \text{sym}$; **MSE-SNR** as in §8.3 using the transmitted truth.
+$`j`$; **SER** = fraction of $`\hat d \neq \text{sym}`$; **MSE-SNR** as in §8.3 using the transmitted truth.
 
 ### 8.5 Worker (`worker.py`)
 
 A `ThreadWorker` runs batches continuously, accumulating the density eye with exponential decay
-($\text{img} \leftarrow \text{decay}\cdot\text{img} + \text{hist}$, decay 0.9) and publishing a
+($`\text{img} \leftarrow \text{decay}\cdot\text{img} + \text{hist}`$, decay 0.9) and publishing a
 double-buffered `DensitySnapshot`. Parameter updates land in a coalesced pending-dict drained at batch
 boundaries; an LTI/STRUCTURAL change (or `mark_dirty()`) recomputes the SBR + voltage grid and clears the
 accumulation. The snapshot `stats` carries `mse_snr_db`, `ser`, `eye_height_v`,
@@ -645,31 +693,37 @@ image), `recovered_phase_ui`, batch counts. Throughput ≥ 1.5 M UI/s (≥ 6.5 M
 
 One-click MMSE solve, then applied to the pipeline in place. Reuses the SBR cursors.
 
-**Convolution (Toeplitz) matrix** $X$ ($n$ taps × $L_x+n-1$): row $i$ is the pulse $x$ shifted by $i$.
+**Convolution (Toeplitz) matrix** $`X`$ ($`n`$ taps × $`L_x+n-1`$): row $`i`$ is the pulse $`x`$ shifted by $`i`$.
 
-**RX FFE MMSE** (Part II, Eqs. 6–7), with signal variance $\sigma_a^2=\mathbb E[a^2]$ and a white-noise
-regularizer $R \approx \sigma_n^2 I$:
+**RX FFE MMSE** (Part II, Eqs. 6–7), with signal variance $`\sigma_a^2=\mathbb E[a^2]`$ and a white-noise
+regularizer $`R \approx \sigma_n^2 I`$:
 
-$$w = y\,X^\top\big(\sigma_a^2\,X X^\top + R\big)^{-1},\qquad
-\text{MMSE} = \sigma_a^2\,\lVert wX - y\rVert^2 + R\lVert w\rVert^2,$$
+```math
+w = y\,X^\top\big(\sigma_a^2\,X X^\top + R\big)^{-1},\qquad
+\text{MMSE} = \sigma_a^2\,\lVert wX - y\rVert^2 + R\lVert w\rVert^2,
+```
 
-searching the main-tap position $i$ (target $y$ has the input's own main-cursor magnitude at out-main)
+searching the main-tap position $`i`$ (target $`y`$ has the input's own main-cursor magnitude at out-main)
 to minimize MMSE.
 
 **TX FFE MMSE** (Eqs. 2–3) — removes *pre*-cursors noise-free, normalized to preserve swing
 (post-cursors deliberately left for RX FFE/DFE):
 
-$$v = g\,H^\top(H H^\top)^{-1},\qquad v \leftarrow v / \textstyle\sum|v|.$$
+```math
+v = g\,H^\top(H H^\top)^{-1},\qquad v \leftarrow v / \textstyle\sum|v|.
+```
 
-**DFE** — taps (volts) = the first $n_\text{dfe}$ post-cursor amplitudes of the RX-FFE-equalized pulse.
+**DFE** — taps (volts) = the first $`n_\text{dfe}`$ post-cursor amplitudes of the RX-FFE-equalized pulse.
 
 **Link objective** (resolution-free analytic post-DFE SNR — the sweep maximizes this):
 
-$$\text{SNR}_\text{link} = 10\log_{10}\frac{c_0^2\,\mathbb E[a^2]}
-{\big(\sum_\text{pre}c_k^2 + \sum_{\text{post}\ge n_\text{dfe}}c_k^2\big)\mathbb E[a^2] + \sigma_n^2}.$$
+```math
+\text{SNR}_\text{link} = 10\log_{10}\frac{c_0^2\,\mathbb E[a^2]}
+{\big(\sum_\text{pre}c_k^2 + \sum_{\text{post}\ge n_\text{dfe}}c_k^2\big)\mathbb E[a^2] + \sigma_n^2}.
+```
 
 `optimize_link()` sweeps a few TX FFE strengths (0, 1, 2 pre-cursor taps), solves RX FFE + DFE for each,
-and keeps the highest $\text{SNR}_\text{link}$ — so auto-EQ never makes the link worse by
+and keeps the highest $`\text{SNR}_\text{link}`$ — so auto-EQ never makes the link worse by
 over-de-emphasizing. The TX FFE is always solved on a neutral (identity) RX FFE for idempotency. Online
 LMS / sign-LMS remain available as the continuous variant in the transient kernel (§8.4).
 
@@ -686,9 +740,11 @@ For each sampling phase, build the **residual PDF** (ISI from the non-main curso
 slope-converted jitter), place it at each PAM level, and integrate the tails past the decision
 thresholds:
 
-$$\text{SER} = \frac1M\sum_{i=0}^{M-1}\Big[\underbrace{\textstyle\int_{\theta_i - |c_0|L_i}^{\infty}\!\! r}_{\text{spill up}} +
+```math
+\text{SER} = \frac1M\sum_{i=0}^{M-1}\Big[\underbrace{\textstyle\int_{\theta_i - |c_0|L_i}^{\infty}\!\! r}_{\text{spill up}} +
 \underbrace{\textstyle\int_{-\infty}^{\theta_{i-1} - |c_0|L_i}\!\! r}_{\text{spill down}}\Big],\qquad
-\text{BER} = \frac{\text{SER}}{\log_2 M}.$$
+\text{BER} = \frac{\text{SER}}{\log_2 M}.
+```
 
 The reported SER is at the best (minimum-SER) phase.
 
@@ -696,17 +752,19 @@ The reported SER is at the best (minimum-SER) phase.
 
 ![Bathtub curves with FEC overlay](img/bathtub.png)
 
-- **Horizontal** (timing): $\log_{10}\text{SER}$ vs sampling phase → eye **width** = contiguous phase
+- **Horizontal** (timing): $`\log_{10}\text{SER}`$ vs sampling phase → eye **width** = contiguous phase
   span where SER < target.
-- **Vertical** (voltage): $\log_{10}\text{SER}$ vs decision level over the worst inner eye → eye
+- **Vertical** (voltage): $`\log_{10}\text{SER}`$ vs decision level over the worst inner eye → eye
   **height** = voltage span where SER < target.
 
 ### 10.3 COM (channel operating margin, Part I, Eq. 1)
 
-$$\text{COM} = 20\log_{10}\frac{A_\text{signal}}{A_\text{noise}},\qquad A_\text{signal} = \tfrac{|c_0|\,\Delta}{2},$$
+```math
+\text{COM} = 20\log_{10}\frac{A_\text{signal}}{A_\text{noise}},\qquad A_\text{signal} = \tfrac{|c_0|\,\Delta}{2},
+```
 
-where $A_\text{noise}$ is the **actual residual-tail quantile** at the target SER (not the Gaussian
-$Q\sigma_n$, which is pessimistic for a bounded ISI residual and would report negative margin for a
+where $`A_\text{noise}`$ is the **actual residual-tail quantile** at the target SER (not the Gaussian
+$`Q\sigma_n`$, which is pessimistic for a bounded ISI residual and would report negative margin for a
 wide-open eye).
 
 ### 10.4 `BerResult`
@@ -716,8 +774,8 @@ wide-open eye).
 | `ser`, `ber` | symbol / bit error rate at the best phase |
 | `com_db` | channel operating margin |
 | `best_phase_ui`, `target_ber` | optimal phase; the BER the openings are evaluated at |
-| `t_axis`, `h_bathtub` | sampling phases; $\log_{10}$SER vs phase |
-| `v_eye`, `v_bathtub` | decision-level axis; $\log_{10}$SER vs level |
+| `t_axis`, `h_bathtub` | sampling phases; $`\log_{10}`$SER vs phase |
+| `v_eye`, `v_bathtub` | decision-level axis; $`\log_{10}`$SER vs level |
 | `eye_height_v`, `eye_width_ui` | openings at `target_ber` |
 | `detector`, `mlsd_dmin`, `mlsd_truncated` | provenance: `"decision"` or `"mlsd"` (§12) |
 
@@ -735,24 +793,26 @@ existing `BerResult` and updates live.
 
 ### 11.1 Reed–Solomon waterfall (hard-decision, i.i.d. symbol errors)
 
-For RS$(n,k)$ over GF$(2^m)$ correcting $t = \lfloor(n-k)/2\rfloor$ symbols, the $m$-bit FEC-symbol error
+For RS$`(n,k)`$ over GF$`(2^m)`$ correcting $`t = \lfloor(n-k)/2\rfloor`$ symbols, the $`m`$-bit FEC-symbol error
 probability and post-decode output symbol/bit error rate are
 
-$$p_s = 1 - (1-\text{BER})^m,\qquad
+```math
+p_s = 1 - (1-\text{BER})^m,\qquad
 \text{SER}_\text{out} = \frac1n\sum_{i=t+1}^{n} i\binom{n}{i}p_s^i(1-p_s)^{n-i},\qquad
-\text{BER}_\text{out} = \text{SER}_\text{out}\cdot\frac{2^{m-1}}{2^m-1}.$$
+\text{BER}_\text{out} = \text{SER}_\text{out}\cdot\frac{2^{m-1}}{2^m-1}.
+```
 
-The sum is evaluated in the log domain (`scipy.special.gammaln`) for stability to ~$10^{-30}$; $t$ is
-clamped to $[0,n]$ (a degenerate $k>n$ corrects nothing).
+The sum is evaluated in the log domain (`scipy.special.gammaln`) for stability to ~$`10^{-30}`$; $`t`$ is
+clamped to $`[0,n]`$ (a degenerate $`k>n`$ corrects nothing).
 
 ### 11.2 Schemes
 
-| Key | Code | $m$ | $t$ | Standard pairing |
+| Key | Code | $`m`$ | $`t`$ | Standard pairing |
 |---|---|---|---|---|
 | `none` | passthrough | — | — | baseline |
 | `kp4` | RS(544, 514) | 10 | 15 | PAM-4, 100G/lane (IEEE 802.3) |
 | `kr4` | RS(528, 514) | 10 | 7 | NRZ, 25/50G (IEEE 802.3) |
-| `custom` | RS$(n,k)$ | user | $(n{-}k)/2$ | — |
+| `custom` | RS$`(n,k)`$ | user | $`(n{-}k)/2`$ | — |
 
 Pairing is **advisory** (soft): any scheme is selectable in any modulation; an off-pairing choice shows
 a note rather than being disabled (RS-FEC is mathematically modulation-agnostic).
@@ -760,17 +820,19 @@ a note rather than being disabled (RS-FEC is mathematically modulation-agnostic)
 ### 11.3 Pre-FEC threshold & coding gain
 
 - **Pre-FEC threshold** — the input BER at which the code delivers `target_post_ber` (default
-  $10^{-15}$), found by bisection. For KP4 → ≈ $2.0\text{–}2.4\times10^{-4}$ (matches the IEEE figure).
+  $`10^{-15}`$), found by bisection. For KP4 → ≈ $`2.0\text{–}2.4\times10^{-4}`$ (matches the IEEE figure).
 - **Coding gain** (Gaussian-approx SNR gain; reproduces the textbook ~6.9 dB for KP4):
 
-$$G_\text{coding}\,[\text{dB}] = 20\log_{10}\frac{Q^{-1}(\text{target})}{Q^{-1}(\text{threshold})},\qquad
-Q^{-1}(p) = \sqrt2\,\operatorname{erfc}^{-1}(2p).$$
+```math
+G_\text{coding}\,[\text{dB}] = 20\log_{10}\frac{Q^{-1}(\text{target})}{Q^{-1}(\text{threshold})},\qquad
+Q^{-1}(p) = \sqrt2\,\mathrm{erfc}^{-1}(2p).
+```
 
 ### 11.4 Error-statistics model
 
 `random` (i.i.d.) is the default — the model EyeQ's noise process justifies. An optional **`bursty`**
-knob is a deliberately coarse approximation: a burst of $L$ bits over interleave depth $D$ corrupts
-$g=\lceil L/(mD)\rceil$ symbols at once, shrinking usable correction to $t//g$ ($g=1$ recovers the exact
+knob is a deliberately coarse approximation: a burst of $`L`$ bits over interleave depth $`D`$ corrupts
+$`g=\lceil L/(mD)\rceil`$ symbols at once, shrinking usable correction to $`t//g`$ ($`g=1`$ recovers the exact
 model). It is labeled as approximate (no real burst-generating channel backs it).
 
 ### 11.5 Visualization & labeling
@@ -799,31 +861,33 @@ two are reconciled by the shared `BerResult` type: `assess_mlsd(…)` returns th
 
 ### 12.2 Minimum-distance union bound
 
-For the sampled channel pulse $h$ (the SBR cursors, volts) and symbol-difference alphabet (error
-symbols: NRZ $\{2\}$, PAM-4 $\{\tfrac23,\tfrac43,2\}$):
+For the sampled channel pulse $`h`$ (the SBR cursors, volts) and symbol-difference alphabet (error
+symbols: NRZ $`\{2\}`$, PAM-4 $`\{\tfrac23,\tfrac43,2\}`$):
 
-$$d_\text{min}^2 = \min_{e\neq 0}\ \lVert e \circledast h\rVert^2,\qquad
+```math
+d_\text{min}^2 = \min_{e\neq 0}\ \lVert e \circledast h\rVert^2,\qquad
 \text{SER} \approx N_{d_\text{min}}\cdot Q\!\Big(\frac{d_\text{min}}{2\sigma}\Big),\qquad
-\text{BER} = \frac{\text{SER}}{\log_2 M},$$
+\text{BER} = \frac{\text{SER}}{\log_2 M},
+```
 
-with $\sigma$ the front-end-referred noise std. $d_\text{min}$ is found by a **bounded depth-first
+with $`\sigma`$ the front-end-referred noise std. $`d_\text{min}`$ is found by a **bounded depth-first
 search** over error events with branch-and-bound pruning (the energy of already-emitted "closed" output
 samples is a valid lower bound on any extension), capped by `node_cap` (→ `truncated` flag) and a
-per-modulation memory cap $L$ (NRZ ≤ 8, PAM-4 ≤ 5) so the search cannot blow up. The single isolated
-error gives the matched-filter bound $d_\text{min}=\Delta\lVert h\rVert$; strong ISI can yield a shorter
+per-modulation memory cap $`L`$ (NRZ ≤ 8, PAM-4 ≤ 5) so the search cannot blow up. The single isolated
+error gives the matched-filter bound $`d_\text{min}=\Delta\lVert h\rVert`$; strong ISI can yield a shorter
 multi-symbol event.
 
-Worked example (hand-checkable): NRZ $h=[1,\,0.5]$ → error event $[2]$ filters to $[2,1]$ →
-$d_\text{min}^2 = 5 = (2\sqrt{1.25})^2$ (the MFB).
+Worked example (hand-checkable): NRZ $`h=[1,\,0.5]`$ → error event $`[2]`$ filters to $`[2,1]`$ →
+$`d_\text{min}^2 = 5 = (2\sqrt{1.25})^2`$ (the MFB).
 
 ### 12.3 Bathtub & report under MLSD
 
-- **Horizontal bathtub**: BER vs phase from $d_\text{min}(\text{phase})$ — directly comparable to the
+- **Horizontal bathtub**: BER vs phase from $`d_\text{min}(\text{phase})`$ — directly comparable to the
   DFE timing bathtub.
-- **Vertical**: a sequence-error margin sweep, $\log_{10}[N\cdot Q(v/\sigma)]$, with `eye_height_v` $=
-  d_\text{min}/2$ (the MLSD analog of the eye half-opening), labeled sequence-error-derived.
-- **COM analog**: $20\log_{10}\!\big[(d_\text{min}/2)/(\sigma\,Q^{-1}(\text{target}))\big]$.
-- **Report rows**: Detector, BER method, Trellis memory $L$, MLSD margin ($d_\text{min}/2$).
+- **Vertical**: a sequence-error margin sweep, $`\log_{10}[N\cdot Q(v/\sigma)]`$, with `eye_height_v`
+  $`= d_\text{min}/2`$ (the MLSD analog of the eye half-opening), labeled sequence-error-derived.
+- **COM analog**: $`20\log_{10}\!\big[(d_\text{min}/2)/(\sigma\,Q^{-1}(\text{target}))\big]`$.
+- **Report rows**: Detector, BER method, Trellis memory $`L`$, MLSD margin ($`d_\text{min}/2`$).
 - **Eye annotation** notes that the eye opening is *not* the MLSD BER predictor.
 
 ### 12.4 Known limitation (stated, not hidden)
@@ -850,7 +914,7 @@ precision-bounded rows.
 |---|---|---|---|
 | BER (pre-FEC) | raw bit error rate at the slicer | — | `ber.ber` |
 | SER | symbol error rate at the optimal phase | — | `ber.ser` |
-| COM | $20\log_{10}(A_\text{sig}/A_\text{noise})$ at target | dB | `ber.com_db` |
+| COM | $`20\log_{10}(A_\text{sig}/A_\text{noise})`$ at target | dB | `ber.com_db` |
 | Eye height | vertical opening at the CDR-recovered phase | mV | `stats.eye_height_at_phase_v` |
 | Eye width | timing opening at target BER | UI | `ber.eye_width_ui` |
 | SNR | MSE-SNR at the slicer (post-DFE, live CDR) | dB | `stats.mse_snr_db` |
@@ -860,8 +924,8 @@ precision-bounded rows.
 | CDR | mode + recovered phase | — | pipeline + stats |
 | Detector | Slicer / DFE / MLSD | — | detector cfg |
 | BER method | eye-tail vs min-distance union bound | — | `ber.detector` |
-| Trellis memory | MLSD channel memory $L$ | taps | detector cfg |
-| MLSD margin | $d_\text{min}/2$ | mV | `ber.mlsd_dmin` |
+| Trellis memory | MLSD channel memory $`L`$ | taps | detector cfg |
+| MLSD margin | $`d_\text{min}/2`$ | mV | `ber.mlsd_dmin` |
 | Post-FEC BER | estimated BER after FEC (model-based) | — | `fec.post_ber` |
 | FEC scheme / coding gain / pre-FEC threshold / post-FEC target | §11 | —/dB/—/— | `fec.*` |
 | **SNDR, RLM, ERL, jitter tolerance** | compliance metrics | dB/—/dB/UI | **deferred** (`— (not modeled)`) |
@@ -895,8 +959,8 @@ no GUI code).
 - **EQ bypass toggles** — a checkbox row `CTLE · TX-FFE · TX-drv · RX-FFE · DFE`. Each is a *true*
   bypass (the block's transfer/feedback returns identity/zero), independent of Auto-EQ and orthogonal to
   the solved taps.
-- **Detector** combo (Slicer / DFE / MLSD) + **Detector…** window (trellis $L$, clamped to the
-  modulation cap, showing ≈ $M^L$ states). The selector owns the receiver architecture (drives the DFE
+- **Detector** combo (Slicer / DFE / MLSD) + **Detector…** window (trellis $`L`$, clamped to the
+  modulation cap, showing ≈ $`M^L`$ states). The selector owns the receiver architecture (drives the DFE
   enable).
 - **Bathtub**, **Report**, **FEC** (master checkbox) + **FEC…** / **Detector…** settings windows.
 - **Mod** (NRZ/PAM4) and **Rate** (112/224/448) selectors; **Load/Save** config.
@@ -914,7 +978,7 @@ predictor.
   the post-FEC curve and the pre-FEC threshold when FEC is on; titled "sequence-error model" under MLSD.
 - **Report** — the metric table (definition + unit per row), with capture/compare.
 - **FEC** — scheme/n/k/m/t/target/error-model + soft-pairing and fidelity notes.
-- **Detector** — mode + trellis $L$ + states + fidelity note.
+- **Detector** — mode + trellis $`L`$ + states + fidelity note.
 
 ### 14.5 Interaction & export
 
@@ -961,8 +1025,8 @@ EyeQ labels every model-bounded or unmodeled quantity. Summary:
 | Channel (analytical) | loss budget + slope (skin/dielectric), TL phase | MR/LR reflection notches need Touchstone; analytical curves are smooth there (a fidelity *regime*, not a bug) |
 | Noise | front-end-referred Gaussian | no colored/correlated noise; crosstalk (FEXT/NEXT) deferred |
 | Jitter | RJ (Gaussian) | DJ/SJ and jitter decomposition deferred |
-| Statistical BER | linear-equalized eye, residual-tail integration to ~$10^{-18}$ | **DFE postcursor cancellation not in the analytic BER** (only in transient SER) |
-| Transient SER | true Monte-Carlo with DFE/CDR | floor ~$10^{-5}$ (run-length limited) |
+| Statistical BER | linear-equalized eye, residual-tail integration to ~$`10^{-18}`$ | **DFE postcursor cancellation not in the analytic BER** (only in transient SER) |
+| Transient SER | true Monte-Carlo with DFE/CDR | floor ~$`10^{-5}`$ (run-length limited) |
 | FEC | hard-decision RS, i.i.d. symbol errors | bursty model is a coarse approximation; concatenated (224G) deferred; assumes WMF |
 | MLSD | minimum-distance union bound | optimistic at low SNR; WMF assumption; no real Viterbi over bits |
 | Compliance | — | SNDR, RLM, ERL, jitter tolerance are present as deferred report rows |
@@ -1049,11 +1113,11 @@ The `tests/` suite (200+ tests) covers every block and engine plus golden/valida
 | `test_dfe` | DFE closes a known-ISI eye; CDR locks from a bad initial phase |
 | `test_optimize` | auto-EQ taps match a hand-solved MMSE case; opens a closed eye |
 | `test_ber` | BER vs transient SER on marginal eyes; BER drops after auto-EQ |
-| `test_touchstone` | SDD21/import matches budget; MR/LR notches; passivity $\lvert H\rvert\le 1$ |
+| `test_touchstone` | SDD21/import matches budget; MR/LR notches; passivity $`\lvert H\rvert\le 1`$ |
 | cross-validation | SDD21 / impulse and FFE-normalization conventions vs a reference model |
 | `test_bypass` | EQ-stage true-bypass equivalence; DFE zero-feedback with CDR running |
-| `test_fec` | **KP4 waterfall anchor** (threshold ≈ $2.4\times10^{-4}$, gain ≈ 6.9 dB); log-domain == direct binomial |
-| `test_mlsd` | **min-distance anchor** $h=[1,0.5]\Rightarrow d^2_\text{min}=5$ (= MFB); MLSD ≤ slicer on ISI |
+| `test_fec` | **KP4 waterfall anchor** (threshold ≈ $`2.4\times10^{-4}`$, gain ≈ 6.9 dB); log-domain == direct binomial |
+| `test_mlsd` | **min-distance anchor** $`h=[1,0.5]\Rightarrow d^2_\text{min}=5`$ (= MFB); MLSD ≤ slicer on ISI |
 | `test_report` | registry extensibility; deferred vs missing rendering |
 | `test_gui` | Controller logic (headless); widget tests skip without a display |
 
@@ -1067,15 +1131,15 @@ fully tested headlessly, and offscreen smoke runs exercise the full GUI wiring.
 
 | Symbol | Meaning |
 |---|---|
-| $f_b,\ f_s,\ f_\text{nyq}$ | baud rate, sample rate, symbol-rate Nyquist ($f_b/2$) |
-| UI, $dt$ | unit interval ($1/f_b$), sample period ($1/f_s$) |
-| $M,\ \Delta$ | number of PAM levels, level step $2/(M-1)$ |
-| $c_k,\ c_0$ | SBR cursor $k$ (volts); main cursor |
-| $\sigma_\text{amp},\ \sigma_t$ | front-end-referred amplitude noise (V), RMS jitter (s) |
-| $H(f)$ | a block's complex transfer function |
-| $Q(x)$ | Gaussian tail $\tfrac12\operatorname{erfc}(x/\sqrt2)$ |
-| $d_\text{min}$ | minimum sequence (Euclidean) distance, MLSD |
-| $t,\ n,\ k,\ m$ | RS correctable symbols, codeword/message length, symbol bits |
+| $`f_b,\ f_s,\ f_\text{nyq}`$ | baud rate, sample rate, symbol-rate Nyquist ($`f_b/2`$) |
+| UI, $`dt`$ | unit interval ($`1/f_b`$), sample period ($`1/f_s`$) |
+| $`M,\ \Delta`$ | number of PAM levels, level step $`2/(M-1)`$ |
+| $`c_k,\ c_0`$ | SBR cursor $`k`$ (volts); main cursor |
+| $`\sigma_\text{amp},\ \sigma_t`$ | front-end-referred amplitude noise (V), RMS jitter (s) |
+| $`H(f)`$ | a block's complex transfer function |
+| $`Q(x)`$ | Gaussian tail $`\tfrac12\mathrm{erfc}(x/\sqrt2)`$ |
+| $`d_\text{min}`$ | minimum sequence (Euclidean) distance, MLSD |
+| $`t,\ n,\ k,\ m`$ | RS correctable symbols, codeword/message length, symbol bits |
 
 | Term | Definition |
 |---|---|
@@ -1099,7 +1163,7 @@ fully tested headlessly, and offscreen smoke runs exercise the full GUI wiring.
 2. M. Shakiba, D. Tonietto, A. Sheikholeslami, **"High-Speed Wireline Links — Part II: Optimization and
    Performance Assessment,"** IEEE OJSSCS, 2024. *(MMSE TX FFE Eqs. 2–3, RX FFE Eqs. 6–8, PDA statistical
    eye Sec. IV, bathtub/COM.)*
-3. IEEE Std 802.3 — Ethernet. *(RS-FEC KP4 RS(544,514) and KR4 RS(528,514) over GF($2^{10}$); pre-FEC
+3. IEEE Std 802.3 — Ethernet. *(RS-FEC KP4 RS(544,514) and KR4 RS(528,514) over GF($`2^{10}`$); pre-FEC
    BER thresholds; clause structure.)*
 4. OIF CEI-224G framework documents and IEEE 802.3dj (200G/lane) FEC baseline proposals. *(224G/lane FEC
    direction — concatenated outer-RS + inner-Hamming; noted as emerging, not implemented.)*
