@@ -62,9 +62,19 @@ Sheikholeslami, *"High-Speed Wireline Links — Parts I & II"*, IEEE OJSSCS 2024
 ## Run the dashboard
 
 ```bash
-pip install -e ".[dev,sim,gui]"
-python -m eyeq.gui.dashboard                      # boots a 112G PAM4 VSR link
-python -m eyeq.gui.dashboard --config examples/112g_pam4.yaml
+./run_dashboard.sh                                # boots a 112G PAM4 VSR link
+./run_dashboard.sh --config examples/112g_pam4.yaml
+```
+
+The venv lives at `~/eyeq-venv` (outside the project). This is deliberate: the
+project sits on the iCloud-synced Desktop, and iCloud creates conflict copies
+(`libqcocoa 2.dylib`, …) of binary packages while pip writes them, which makes Qt
+fail to load its platform plugin. Keep the venv (and ideally the whole project)
+out of iCloud-synced folders. Recreate it with:
+
+```bash
+python3.11 -m venv ~/eyeq-venv
+~/eyeq-venv/bin/pip install -e ".[dev,sim,gui]"
 ```
 
 Click **Start**, then **Auto-EQ** to watch a closed eye open.
@@ -105,10 +115,9 @@ tests/       unit + integration tests
 ## Develop
 
 ```bash
-python3.11 -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"          # core + tests
-pip install -e ".[dev,sim,gui]"  # everything (later phases)
+python3.11 -m venv ~/eyeq-venv          # outside iCloud-synced folders (see above)
+~/eyeq-venv/bin/pip install -e ".[dev,sim,gui]"
 
-pytest                           # run the test suite
-python examples/run_link.py      # headless smoke example
+~/eyeq-venv/bin/pytest                  # run the test suite
+~/eyeq-venv/bin/python examples/run_link.py   # headless smoke example
 ```
