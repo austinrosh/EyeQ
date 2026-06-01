@@ -82,6 +82,35 @@ def test_sample_phase_moves_optimal_point():
     assert snr_at(0.0) > snr_at(-0.4) + 3.0
 
 
+# --------------------------------------------------------------------------- #
+# online LMS / sign-LMS adaptation
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize("mode", ["lms", "sign-lms"])
+def test_lms_converges_dfe_taps_from_zero(mode):
+    p = pipe("NRZ", "VSR")
+    _, sbr, eye = STAT.compute(p)
+    ideal = sbr.cursors[sbr.cursor_k > 0]
+    n = int(min(6, ideal.size))
+    mu = 0.02 if mode == "lms" else 2e-4
+    p.apply_params({"dfe": {"n_taps": n, "h1": 0.0, "adapt": mode, "mu": mu}})
+
+    rng = np.random.default_rng(0)
+    for _ in range(15):  # adapt from zero over several batches
+        res = TRAN.run_batch(p, n_symbols=50_000, sbr=sbr, v=eye.v, rng=rng)
+    taps = p.by_name("dfe").taps()
+    assert taps[0] == pytest.approx(ideal[0], rel=0.25)  # first tap finds the post-cursor
+    assert res.ser < 1e-3                                # eye opened
+
+
+def test_no_adaptation_leaves_taps_fixed():
+    p = pipe("NRZ", "VSR")
+    _, sbr, eye = STAT.compute(p)
+    p.apply_params({"dfe": {"n_taps": 4, "h1": 20.0, "adapt": "off", "mu": 0.05}})
+    before = p.by_name("dfe").taps().copy()
+    TRAN.run_batch(p, n_symbols=50_000, sbr=sbr, v=eye.v, rng=np.random.default_rng(0))
+    assert np.array_equal(p.by_name("dfe").taps(), before)  # adapt off -> no change
+
+
 def test_jitter_shrinks_the_eye():
     p = pipe("NRZ", "XSR", txffe={"pre": -0.08, "post": -0.12})
     _, sbr, eye = STAT.compute(p)

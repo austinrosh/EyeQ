@@ -102,11 +102,14 @@ class TransientEngine:
         dec_col = self._decision_col(pipe, sps, half)
 
         # Decision-directed tail (DFE) goes through the Numba kernel; the LTI-only
-        # case stays fully vectorized.
+        # case stays fully vectorized. Run the kernel when the DFE has taps or is
+        # adapting (LMS may start from zero taps).
         dfe = pipe.by_name("dfe") if "dfe" in pipe.names() else None
-        if dfe is not None and dfe.is_active():
+        adapt = self._adapt_mode(dfe)
+        run_dfe = dfe is not None and int(dfe.get("n_taps")) > 0 and (dfe.is_active() or adapt)
+        if run_dfe:
             density, mse_snr, ser = self._dfe_eye(
-                windows, sidx, ctx, sbr, dfe.taps(), dec_col, v, dv, nb
+                windows, sidx, ctx, sbr, dfe, dec_col, v, dv, nb, adapt
             )
         else:
             density, mse_snr, ser = self._lti_eye(
@@ -140,20 +143,31 @@ class TransientEngine:
         dec = np.argmin(np.abs(samp[:, None] - levels[None, :] * main_cursor), axis=1)
         return density, float(mse_snr), float(np.mean(dec != sidx))
 
-    def _dfe_eye(self, windows, sidx, ctx, sbr, taps, dec_col, v, dv, nb):
+    def _dfe_eye(self, windows, sidx, ctx, sbr, dfe, dec_col, v, dv, nb, adapt):
         from ._kernels import dfe_eye  # lazy: numba only when the DFE runs
 
         sps = windows.shape[1]
         levels = ctx.levels
         thr = sbr.main_cursor * 0.5 * (levels[:-1] + levels[1:])
         hist2d = np.zeros((sps, nb))
+        taps = np.ascontiguousarray(dfe.taps()).copy()  # mutated in place if adapting
+        mu = float(dfe.get("mu")) if adapt else 0.0
         errors, sum_err2, sum_sig2 = dfe_eye(
             np.ascontiguousarray(windows), levels[sidx], sidx.astype(np.int64),
-            np.ascontiguousarray(taps), levels, np.ascontiguousarray(thr),
-            int(dec_col), float(sbr.main_cursor), float(v[0]), float(dv), int(nb), hist2d,
+            taps, levels, np.ascontiguousarray(thr),
+            int(dec_col), float(sbr.main_cursor), float(v[0]), float(dv), int(nb),
+            hist2d, int(adapt), mu,
         )
+        if adapt and mu != 0.0:
+            dfe.set_taps(taps)  # persist the adapted taps across batches
         mse_snr = 10.0 * np.log10(sum_sig2 / max(sum_err2, 1e-30))
         return hist2d, float(mse_snr), float(errors) / windows.shape[0]
+
+    @staticmethod
+    def _adapt_mode(dfe) -> int:
+        if dfe is None:
+            return 0
+        return {"off": 0, "lms": 1, "sign-lms": 2}.get(dfe.get("adapt"), 0)
 
     @staticmethod
     def _decision_col(pipe, sps, half) -> int:
