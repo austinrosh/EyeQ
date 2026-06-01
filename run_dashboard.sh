@@ -22,4 +22,9 @@ fi
 PLUGINS="$("$PY" -c 'import os, PySide6; print(os.path.join(os.path.dirname(PySide6.__file__), "Qt", "plugins", "platforms"))')"
 export QT_QPA_PLATFORM_PLUGIN_PATH="$PLUGINS"
 
+# Self-heal: iCloud/Finder can set the macOS 'hidden' flag on the plugin dylibs,
+# which makes Qt's directory scan skip them -> "Could not find the Qt platform
+# plugin". Clearing it is cheap and idempotent.
+chflags -R nohidden "$(dirname "$PLUGINS")" 2>/dev/null || true
+
 exec "$PY" -m eyeq.gui.dashboard "$@"

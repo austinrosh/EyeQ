@@ -6,6 +6,8 @@ shows the RX eye (NRZ/PAM4) responding in real time to TX/RX FFE, CTLE, DFE,
 CDR sampling phase, channel loss, and jitter — a Python analogue of MATLAB
 SerDes Toolbox with full control over every block.
 
+![EyeQ dashboard](docs/dashboard.png)
+
 Supports 112 / 224 / 448 Gb/s from one codebase. Everything is normalized to
 UI and f/f_nyq, so the link rate is metadata; only filter lengths scale.
 
