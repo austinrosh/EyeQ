@@ -84,7 +84,7 @@ class TransientEngine:
         sidx = sym_idx[k0 : k0 + w]
 
         # Inject amplitude noise; jitter shifts each trace horizontally.
-        sigma_v = self._amplitude_sigma(pipe)
+        sigma_v = self._stat._amplitude_sigma(pipe)  # front-end-referred RX noise
         if sigma_v > 0:
             windows = windows + rng.normal(0.0, sigma_v, windows.shape)
         rj_ui = self._jitter_ui(pipe)
@@ -163,13 +163,6 @@ class TransientEngine:
         return int(np.clip(half + round(ph * sps), 0, sps - 1))
 
     # -- helpers --------------------------------------------------------------
-    @staticmethod
-    def _amplitude_sigma(pipe: Pipeline) -> float:
-        try:
-            return pipe.by_name("noise").get("sigma_mvrms") * 1e-3
-        except KeyError:
-            return 0.0
-
     @staticmethod
     def _jitter_ui(pipe: Pipeline) -> float:
         try:

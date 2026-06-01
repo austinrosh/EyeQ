@@ -197,11 +197,7 @@ class StatisticalEngine:
         ctx = pipe.ctx
         sbr = sbr or self.sbr(pipe)
         ea2 = float(np.mean(ctx.levels**2))
-        sigma_v = 0.0
-        try:
-            sigma_v = pipe.by_name("noise").get("sigma_mvrms") * 1e-3
-        except KeyError:
-            pass
+        sigma_v = self._amplitude_sigma(pipe)  # front-end-referred RX noise
         signal = sbr.main_cursor**2 * ea2
         distortion = float(np.sum(sbr.isi_cursors**2)) * ea2 + sigma_v**2
         return 10.0 * np.log10(signal / max(distortion, 1e-30))
@@ -259,10 +255,30 @@ class StatisticalEngine:
 
     @staticmethod
     def _amplitude_sigma(pipe: Pipeline) -> float:
+        """Decision-point noise std: RX-input-referred noise x front-end gain.
+
+        RX noise enters at the receiver input and is amplified by the front-end
+        (CTLE x RX FFE), so an equalizing RX FFE pays a noise penalty — whereas a
+        TX FFE operates on clean symbols and does not. Modeling this is what lets
+        the TX/RX equalization split be optimized meaningfully.
+        """
         try:
-            return pipe.by_name("noise").get("sigma_mvrms") * 1e-3
+            sigma = pipe.by_name("noise").get("sigma_mvrms") * 1e-3
         except KeyError:
             return 0.0
+        if sigma <= 0.0:
+            return 0.0
+        ctx = pipe.ctx
+        f = ctx.freq_grid()
+        band = f <= ctx.f_nyq
+        h = np.ones(f.size, dtype=np.complex128)
+        for name in ("ctle", "rxffe"):
+            try:
+                h = h * pipe.by_name(name).transfer(ctx)
+            except KeyError:
+                pass
+        gain = float(np.sqrt(np.mean(np.abs(h[band]) ** 2)))
+        return sigma * gain
 
     @staticmethod
     def _jitter_sigma_s(pipe: Pipeline, ctx) -> float:

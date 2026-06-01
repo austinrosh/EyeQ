@@ -35,19 +35,44 @@ class TXFFE(LTIBlock):
         Param("norm", 0, 0, "peak", kind=Kind.STRUCTURAL, choices=("peak", "energy")),
     ]
 
+    def __init__(self, **overrides):
+        super().__init__(**overrides)
+        self._taps: NDArray | None = None  # explicit taps (auto-EQ / LMS)
+        self._main_pos: int | None = None
+
+    def set_params(self, **values) -> None:
+        # Dragging a manual tap returns to manual mode (drops any auto-EQ override).
+        if {"pre", "post", "swing"} & set(values):
+            self._taps = None
+            self._main_pos = None
+        super().set_params(**values)
+
+    def set_taps(self, taps: NDArray, main_pos: int) -> None:
+        self._taps = np.asarray(taps, dtype=float)
+        self._main_pos = int(main_pos)
+
+    def reset_taps(self) -> None:
+        self._taps = None
+        self._main_pos = None
+
     def main_tap(self) -> float:
         """Derived main cursor tap c0 = max(0.6, 1 - sum of |sub-taps|)."""
         return max(0.6, 1.0 - (abs(self.get("pre")) + abs(self.get("post"))))
 
     def taps(self) -> NDArray[np.float64]:
-        """FFE taps in time order [pre, main, post] (symbol-spaced)."""
+        """FFE taps: explicit (auto-EQ) if set, else [pre, main, post]."""
+        if self._taps is not None:
+            return self._taps
         return np.array([self.get("pre"), self.main_tap(), self.get("post")], float)
 
+    def main_pos(self) -> int:
+        return self._main_pos if self._main_pos is not None else 1  # [pre, main, post]
+
     def ffe_transfer(self, ctx: SimContext) -> NDArray[np.complex128]:
-        """FIR de-emphasis response: sum_k c_k exp(-j 2 pi f k UI)."""
+        """FIR de-emphasis response: sum_k c_k exp(-j 2 pi f (k - main) UI)."""
         f = ctx.freq_grid()
         taps = self.taps()
-        k = np.arange(taps.size)  # delays 0,1,2 in UI (bulk 1-UI delay is harmless)
+        k = np.arange(taps.size) - self.main_pos()  # centered: no net bulk delay
         return (taps[None, :] * np.exp(-1j * 2 * np.pi * np.outer(f, k) * ctx.ui)).sum(1)
 
     def driver_transfer(self, ctx: SimContext) -> NDArray[np.complex128]:
