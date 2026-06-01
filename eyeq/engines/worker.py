@@ -159,6 +159,7 @@ class ThreadWorker:
                     "mse_snr_db": res.mse_snr_db,
                     "ser": res.ser,
                     "eye_height_v": res.eye_height_v,
+                    "recovered_phase_ui": res.recovered_phase_ui,
                     "n_batches": self._n_batches,
                     "ui_per_batch": res.n_symbols,
                 },

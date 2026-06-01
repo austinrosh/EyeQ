@@ -34,6 +34,10 @@ class EyePlot(pg.PlotWidget):
         self.img.setLookupTable(_lut())
         self.addItem(self.img)
         self.setXRange(-0.5, 1.5, padding=0)
+        # marker at the (CDR-recovered or static) decision sampling phase
+        self.sample_line = pg.InfiniteLine(pos=0.0, angle=90,
+                                           pen=pg.mkPen("#ff5050", style=QtCore.Qt.DashLine))
+        self.addItem(self.sample_line)
 
     def update_eye(self, snap) -> None:
         img = snap.image  # [phase, voltage]
@@ -43,8 +47,10 @@ class EyePlot(pg.PlotWidget):
         v0, v1 = snap.levels
         self.img.setRect(QtCore.QRectF(-0.5, v0, 2.0, v1 - v0))
         st = snap.stats
+        self.sample_line.setPos(st.get("recovered_phase_ui", 0.0))
         self.setTitle(f"MSE SNR = {st.get('mse_snr_db', 0):.1f} dB    "
-                      f"SER = {st.get('ser', 0):.1e}")
+                      f"SER = {st.get('ser', 0):.1e}    "
+                      f"phase = {st.get('recovered_phase_ui', 0.0):+.2f} UI")
 
 
 class CascadePlot(pg.PlotWidget):

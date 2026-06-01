@@ -39,6 +39,7 @@ class TransientResult:
     mse_snr_db: float        # SNR at the decision point
     ser: float               # symbol error rate at the best sampling phase
     n_symbols: int
+    recovered_phase_ui: float = 0.0  # CDR-recovered sampling phase (0 if static)
 
 
 class TransientEngine:
@@ -101,15 +102,16 @@ class TransientEngine:
         levels = ctx.levels
         dec_col = self._decision_col(pipe, sps, half)
 
-        # Decision-directed tail (DFE) goes through the Numba kernel; the LTI-only
-        # case stays fully vectorized. Run the kernel when the DFE has taps or is
-        # adapting (LMS may start from zero taps).
+        # The Numba kernel runs the slicer + DFE + CDR; the pure LTI-only case
+        # (no DFE taps, no adaptation, static clock) stays fully vectorized.
         dfe = pipe.by_name("dfe") if "dfe" in pipe.names() else None
         adapt = self._adapt_mode(dfe)
-        run_dfe = dfe is not None and int(dfe.get("n_taps")) > 0 and (dfe.is_active() or adapt)
-        if run_dfe:
-            density, mse_snr, ser = self._dfe_eye(
-                windows, sidx, ctx, sbr, dfe, dec_col, v, dv, nb, adapt
+        cdr_mode, kp, ki = self._cdr_params(pipe)
+        dfe_on = dfe is not None and int(dfe.get("n_taps")) > 0 and (dfe.is_active() or adapt)
+        recovered_ui = float((dec_col - half) / sps)
+        if dfe_on or cdr_mode != 0:
+            density, mse_snr, ser, recovered_ui = self._dfe_eye(
+                windows, sidx, ctx, sbr, dfe, dec_col, v, dv, nb, adapt, cdr_mode, kp, ki
             )
         else:
             density, mse_snr, ser = self._lti_eye(
@@ -124,7 +126,8 @@ class TransientEngine:
         eye_h, best_pi = self._stat._eye_height(density, v, main_cursor, levels)
         t_ui = offsets / sps
         return TransientResult(
-            t_ui, v, density, eye_h, float(t_ui[best_pi]), float(mse_snr), ser, int(w)
+            t_ui, v, density, eye_h, float(t_ui[best_pi]), float(mse_snr), ser, int(w),
+            float(recovered_ui),
         )
 
     # -- eye builders ---------------------------------------------------------
@@ -143,31 +146,43 @@ class TransientEngine:
         dec = np.argmin(np.abs(samp[:, None] - levels[None, :] * main_cursor), axis=1)
         return density, float(mse_snr), float(np.mean(dec != sidx))
 
-    def _dfe_eye(self, windows, sidx, ctx, sbr, dfe, dec_col, v, dv, nb, adapt):
-        from ._kernels import dfe_eye  # lazy: numba only when the DFE runs
+    def _dfe_eye(self, windows, sidx, ctx, sbr, dfe, dec_col, v, dv, nb, adapt, cdr_mode, kp, ki):
+        from ._kernels import dfe_eye  # lazy: numba only when the kernel runs
 
         sps = windows.shape[1]
+        half = sps // 2
         levels = ctx.levels
         thr = sbr.main_cursor * 0.5 * (levels[:-1] + levels[1:])
         hist2d = np.zeros((sps, nb))
-        taps = np.ascontiguousarray(dfe.taps()).copy()  # mutated in place if adapting
-        mu = float(dfe.get("mu")) if adapt else 0.0
-        errors, sum_err2, sum_sig2 = dfe_eye(
+        if dfe is not None:
+            taps = np.ascontiguousarray(dfe.taps()).copy()  # mutated if adapting
+            mu = float(dfe.get("mu")) if adapt else 0.0
+        else:
+            taps, mu = np.zeros(0), 0.0
+        errors, sum_err2, sum_sig2, mean_phase = dfe_eye(
             np.ascontiguousarray(windows), levels[sidx], sidx.astype(np.int64),
             taps, levels, np.ascontiguousarray(thr),
             int(dec_col), float(sbr.main_cursor), float(v[0]), float(dv), int(nb),
-            hist2d, int(adapt), mu,
+            hist2d, int(adapt), mu, int(cdr_mode), float(kp), float(ki),
         )
-        if adapt and mu != 0.0:
+        if dfe is not None and adapt and mu != 0.0:
             dfe.set_taps(taps)  # persist the adapted taps across batches
         mse_snr = 10.0 * np.log10(sum_sig2 / max(sum_err2, 1e-30))
-        return hist2d, float(mse_snr), float(errors) / windows.shape[0]
+        recovered_ui = float((dec_col - half + mean_phase) / sps)
+        return hist2d, float(mse_snr), float(errors) / windows.shape[0], recovered_ui
 
     @staticmethod
     def _adapt_mode(dfe) -> int:
         if dfe is None:
             return 0
         return {"off": 0, "lms": 1, "sign-lms": 2}.get(dfe.get("adapt"), 0)
+
+    @staticmethod
+    def _cdr_params(pipe):
+        if "cdr_slicer" not in pipe.names():
+            return 0, 0.0, 0.0
+        cdr = pipe.by_name("cdr_slicer")
+        return cdr.cdr_mode_int(), float(cdr.get("kp")), float(cdr.get("ki"))
 
     @staticmethod
     def _decision_col(pipe, sps, half) -> int:

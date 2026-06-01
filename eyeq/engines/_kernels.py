@@ -16,7 +16,7 @@ from numba import njit
 
 @njit(cache=True, fastmath=True, nogil=True)
 def dfe_eye(windows, a_norm, sym_idx, taps, levels, thr, dec_col, main_cursor,
-            v_lo, dv, nb, hist2d, adapt, mu):
+            v_lo, dv, nb, hist2d, adapt, mu, cdr_mode, kp, ki):
     """Run the DFE/slicer over pre-DFE eye windows; accumulate the post-DFE eye.
 
     windows : [w, sps] pre-DFE per-UI samples (LTI prefix already applied).
@@ -28,23 +28,37 @@ def dfe_eye(windows, a_norm, sym_idx, taps, levels, thr, dec_col, main_cursor,
     dec_col : sampling-phase column for the decision.
     hist2d  : [sps, nb] accumulator (modified in place).
     adapt   : 0 off, 1 LMS, 2 sign-LMS; mu : adaptation step.
+    cdr_mode: 0 static, 1 bang-bang (Alexander), 2 Mueller-Muller; kp/ki : PI loop.
 
-    Returns (errors, sum_err2, sum_sig2) for SER and MSE-SNR.
+    Returns (errors, sum_err2, sum_sig2, mean_phase_samples). The recovered
+    sampling phase tracks the data (and jitter) from any initial phase.
     """
     w, sps = windows.shape
     n_dfe = taps.shape[0]
     m_lev = levels.shape[0]
+    half = sps // 2
     d_hist = np.zeros(n_dfe)
     errors = 0
     sum_err2 = 0.0
     sum_sig2 = 0.0
+    cdr_phase = 0.0   # samples, relative to dec_col
+    integ = 0.0
+    samp_prev = 0.0
+    d_prev = 0.0
+    phase_sum = 0.0
 
     for k in range(w):
+        col = dec_col + int(round(cdr_phase))
+        if col < 0:
+            col = 0
+        elif col >= sps:
+            col = sps - 1
+
         fb = 0.0
         for i in range(n_dfe):
             fb += taps[i] * d_hist[i]
 
-        samp = windows[k, dec_col] - fb
+        samp = windows[k, col] - fb
         di = 0  # slice to nearest level via thresholds
         for t in range(m_lev - 1):
             if samp >= thr[t]:
@@ -56,6 +70,33 @@ def dfe_eye(windows, a_norm, sym_idx, taps, levels, thr, dec_col, main_cursor,
         e = samp - ideal
         sum_err2 += e * e
         sum_sig2 += ideal * ideal
+
+        # CDR phase detector + PI loop filter (recovers the sampling phase).
+        if cdr_mode != 0 and k > 0:
+            dk = levels[di]
+            if cdr_mode == 2:  # Mueller-Muller (baud-rate), normalized to O(1)
+                e_t = (samp * d_prev - samp_prev * dk) / (main_cursor * main_cursor + 1e-30)
+            else:  # bang-bang (Alexander): edge sample vs the transition midpoint
+                ec = col - half
+                if ec < 0:
+                    ec = 0
+                e_edge = windows[k, ec] - fb
+                mid = 0.5 * (d_prev + dk) * main_cursor
+                if dk > d_prev:      # rising: edge above mid -> sampling late
+                    e_t = -1.0 if e_edge > mid else 1.0
+                elif dk < d_prev:    # falling: edge above mid -> sampling early
+                    e_t = 1.0 if e_edge > mid else -1.0
+                else:
+                    e_t = 0.0
+            integ += e_t
+            cdr_phase += kp * e_t + ki * integ
+            if cdr_phase > half:
+                cdr_phase = half
+            elif cdr_phase < -half:
+                cdr_phase = -half
+        phase_sum += cdr_phase
+        samp_prev = samp
+        d_prev = levels[di]
 
         # Decision-directed LMS: drive the slicer error toward zero by adjusting
         # the feedback taps. err uses the decision (levels[di]), not the truth.
@@ -79,4 +120,4 @@ def dfe_eye(windows, a_norm, sym_idx, taps, levels, thr, dec_col, main_cursor,
             if 0 <= b < nb:
                 hist2d[j, b] += 1.0
 
-    return errors, sum_err2, sum_sig2
+    return errors, sum_err2, sum_sig2, phase_sum / w

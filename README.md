@@ -73,9 +73,17 @@ Click **Start**, then **Auto-EQ** to watch a closed eye open.
   and **COM** (channel operating margin) from the statistical eye — error rates far
   below what the Monte Carlo eye can reach. The dashboard's voltage panel shows the
   amplitude histogram plus the vertical bathtub, with a live BER / COM readout.
+- **Phase 5b** (equalization): **MMSE TX FFE auto-EQ** (Auto-EQ now co-optimizes
+  TX + RX + DFE, picking the optimum split) with a front-end-referred RX noise
+  model so the RX FFE pays a noise penalty and the TX FFE doesn't; plus live
+  **online LMS / sign-LMS** DFE adaptation (the `adapt` dropdown converges taps
+  in real time).
+- **Phase 5c** (real CDR): **bang-bang (Alexander)** and **Mueller-Müller** phase
+  detectors + a PI loop filter recover the sampling phase from the data and track
+  jitter — the eye's dashed marker shows the recovered phase.
 
-See the build plan for the remaining Phase 5 work (TX FFE auto-EQ + online LMS,
-a real CDR loop; crosstalk / package-`.s4p` / jitter decomposition optional).
+Remaining (optional): crosstalk (FEXT/NEXT), package-`.s4p` import, DJ/SJ jitter
+and decomposition, PNG/CSV export.
 
 To (re)generate the reference channels: `python examples/generate_reference_channels.py`.
 

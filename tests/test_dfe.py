@@ -111,6 +111,33 @@ def test_no_adaptation_leaves_taps_fixed():
     assert np.array_equal(p.by_name("dfe").taps(), before)  # adapt off -> no change
 
 
+# --------------------------------------------------------------------------- #
+# CDR phase recovery
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize("mode", ["mueller-muller", "bang-bang"])
+@pytest.mark.parametrize("init", [0.25, -0.25])
+def test_cdr_recovers_optimal_phase(mode, init):
+    p = pipe("NRZ", "XSR", txffe={"pre": -0.08, "post": -0.12})
+    _, sbr, eye = STAT.compute(p)
+    p.apply_params({"cdr_slicer": {"sample_phase_ui": 0.0, "cdr_mode": "static"}})
+    opt = TRAN.run_batch(p, n_symbols=80_000, sbr=sbr, v=eye.v, rng=np.random.default_rng(0)).mse_snr_db
+
+    p.apply_params({"cdr_slicer": {"sample_phase_ui": init, "cdr_mode": mode, "kp": 0.04, "ki": 0.002}})
+    rng = np.random.default_rng(0)
+    for _ in range(6):  # let the loop lock from the bad initial phase
+        r = TRAN.run_batch(p, n_symbols=60_000, sbr=sbr, v=eye.v, rng=rng)
+    assert abs(r.recovered_phase_ui) < 0.1        # locked near the eye center
+    assert r.mse_snr_db > opt - 1.5               # recovered SNR ~ the optimum
+
+
+def test_static_cdr_uses_the_sample_phase_slider():
+    p = pipe("NRZ", "XSR")
+    _, sbr, eye = STAT.compute(p)
+    p.apply_params({"cdr_slicer": {"sample_phase_ui": 0.25, "cdr_mode": "static"}})
+    r = TRAN.run_batch(p, n_symbols=40_000, sbr=sbr, v=eye.v, rng=np.random.default_rng(0))
+    assert r.recovered_phase_ui == pytest.approx(0.25, abs=1.0 / p.ctx.sps)
+
+
 def test_jitter_shrinks_the_eye():
     p = pipe("NRZ", "XSR", txffe={"pre": -0.08, "post": -0.12})
     _, sbr, eye = STAT.compute(p)
