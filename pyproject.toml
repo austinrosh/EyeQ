@@ -7,6 +7,7 @@ name = "eyeq"
 version = "0.0.0"
 description = "EyeQ — interactive SerDes link-modeling tool (statistical + transient engines)"
 readme = "README.md"
+license = { file = "LICENSE" }
 requires-python = ">=3.11"
 # Core deps: numpy (arrays everywhere) + pyyaml (config save/load is a core feature).
 dependencies = [

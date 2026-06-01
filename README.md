@@ -250,4 +250,6 @@ and Mueller-Müller; minimum-phase reconstruction follows Oppenheim & Schafer. F
 
 ---
 
-*EyeQ is research code (version 0.0.0). No formal redistribution license is currently included.*
+## License
+
+Released under the [MIT License](LICENSE).
