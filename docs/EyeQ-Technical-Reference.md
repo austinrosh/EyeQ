@@ -212,7 +212,7 @@ sets the time scale, absorbed by `sps`. So NRZ and PAM-4 at the same reach get i
 | TX FFE (pre, post) | $(1,\ \text{round}(0.10L))$ | post $\in[1,3]$ |
 | RX FFE taps | $\text{round}(4 + 0.30L)$ (forced odd) | $[5, 31]$ |
 | DFE taps | $\text{round}(0.6L)$ | $[1, 32]$ |
-| FFT length | $\text{next\_pow2}(\max(4096,\ 4\cdot\text{sbr\_len\_samples}))$ | — |
+| FFT length | $\text{nextpow2}(\max(4096,\ 4\cdot\text{SBR samples}))$ | — |
 
 `sbr_len_samples = sbr_len_ui · sps`. Default `sps = 32` (16 = "fast/live").
 
@@ -332,14 +332,14 @@ $$c_0 = \max\!\big(0.6,\ 1 - (|c_\text{pre}| + |c_\text{post}|)\big).$$
 
 $$H_\text{ffe}(f) = \sum_k c_k\, e^{-j 2\pi f (k - k_\text{main})\,\text{UI}}.$$
 
-**Gaussian driver low-pass** (Part I, Eqs. 18–19) with rise time $t_r = \text{tr\_ui}\cdot\text{UI}$:
+**Gaussian driver low-pass** (Part I, Eqs. 18–19) with rise time $t_r = \text{tr}\cdot\text{UI}$ (the `tr_ui` parameter, in UI):
 
 $$H_\text{drv}(f) = \exp\!\Big[-\big(\pi f / a\big)^2\Big], \qquad a = 0.8 / t_r.$$
 
 **Total transfer** (each component independently bypassable):
 
-$$H_\text{tx}(f) = \big[\,H_\text{ffe}(f)\ \text{if ffe\_enabled else } 1\,\big]\cdot
-\big[\,H_\text{drv}(f)\ \text{if driver\_enabled else } 1\,\big].$$
+$$H_\text{tx}(f) = \big[\,H_\text{ffe}(f)\ \text{if FFE enabled, else } 1\,\big]\cdot
+\big[\,H_\text{drv}(f)\ \text{if driver enabled, else } 1\,\big].$$
 
 The transfer is a dimensionless shape; the launch voltage `swing` is applied when the engine scales the
 SBR/eye to volts (the outermost PAM level launches $\pm\,\text{swing}/2$). Explicit taps set by auto-EQ
@@ -351,7 +351,7 @@ override `[pre, main, post]`; dragging `pre/post/swing` reverts to manual mode.
 |---|---|---|---|---|
 | `rj_mui` | 0–50 | 0 | mUI | NONLINEAR (`also_statistical`) |
 
-Random (Gaussian) jitter. RMS in seconds: $\sigma_t = \text{rj\_mui}\cdot 10^{-3}\cdot\text{UI}$. The
+Random (Gaussian) jitter. RMS in seconds: $\sigma_t = r_j\cdot 10^{-3}\cdot\text{UI}$, where $r_j$ is the `rj_mui` parameter (mUI). The
 transient engine applies a per-symbol circular sample shift $\sim \mathcal N(0, (\sigma_t f_s)^2)$; the
 statistical engine converts it to amplitude noise via the local slope (§7.5).
 
@@ -427,12 +427,12 @@ frequencies normalized to $f/f_\text{nyq}$.
 | `fpp` | 0.5–3 | 1.5 | ×f_nyq | LTI |
 | `zeta_pp` | 0.3–2 | 0.7 | — | LTI |
 
-$$H_\text{ctle}(s) = \underbrace{10^{\text{dc\_gain}/20}}_{\text{dc}}\cdot
+$$H_\text{ctle}(s) = \underbrace{10^{\text{dc gain}/20}}_{\text{dc}}\cdot
 \frac{1 + s/\omega_z}{1 + s/\omega_p}\cdot
 \frac{\omega_{pp}^2}{s^2 + 2\zeta\,\omega_{pp}\,s + \omega_{pp}^2},\quad s = j2\pi f,$$
 
 with $\omega_z = 2\pi\,\text{fz}\,f_\text{nyq}$, $\omega_p = 2\pi\,\text{fp}\,f_\text{nyq}$,
-$\omega_{pp} = 2\pi\,\text{fpp}\,f_\text{nyq}$, $\zeta = \text{zeta\_pp}$ (quality factor
+$\omega_{pp} = 2\pi\,\text{fpp}\,f_\text{nyq}$, and $\zeta$ is the `zeta_pp` parameter (quality factor
 $Q = 1/2\zeta$). A real zero/pole pair ($\text{fz} < \text{fp}$ boosts toward Nyquist) plus a resonant
 section. When `enabled = off`, $H = 1$ (true bypass).
 
@@ -490,7 +490,7 @@ detector equations: §8.4.
 
 | Function | Definition |
 |---|---|
-| `to_db(x)` | $20\log_{10}\max(|x|, \varepsilon)$, $\varepsilon=10^{-300}$ |
+| `to_db(x)` | $20\log_{10}\max(\lvert x\rvert, \varepsilon)$, $\varepsilon=10^{-300}$ |
 | `from_db(d)` | $10^{d/20}$ |
 | `transfer_to_impulse(H, n)` | `np.fft.irfft(H, n)` — one-sided transfer → length-$n$ real impulse |
 | `minimum_phase_spectrum(mag, n)` | Cepstral homomorphic reconstruction (below) |
@@ -543,7 +543,9 @@ at ~32 phases → a 3-D PDF eye.
 ### 7.4 Front-end-referred noise
 
 $$\sigma_\text{amp} = \sigma_\text{in}\cdot\sqrt{\ \overline{|H_\text{ctle}(f)\,H_\text{rxffe}(f)|^2}\ }\Big|_{f\le f_\text{nyq}},
-\qquad \sigma_\text{in} = \text{sigma\_mvrms}\cdot10^{-3}.$$
+\qquad \sigma_\text{in} = 10^{-3}\,\sigma_\text{mVrms}.$$
+
+(where $\sigma_\text{mVrms}$ is the `sigma_mvrms` parameter, in mVrms.)
 
 ### 7.5 Jitter as amplitude noise
 
@@ -1047,7 +1049,7 @@ The `tests/` suite (200+ tests) covers every block and engine plus golden/valida
 | `test_dfe` | DFE closes a known-ISI eye; CDR locks from a bad initial phase |
 | `test_optimize` | auto-EQ taps match a hand-solved MMSE case; opens a closed eye |
 | `test_ber` | BER vs transient SER on marginal eyes; BER drops after auto-EQ |
-| `test_touchstone` | SDD21/import matches budget; MR/LR notches; passivity $|H|\le1$ |
+| `test_touchstone` | SDD21/import matches budget; MR/LR notches; passivity $\lvert H\rvert\le 1$ |
 | cross-validation | SDD21 / impulse and FFE-normalization conventions vs a reference model |
 | `test_bypass` | EQ-stage true-bypass equivalence; DFE zero-feedback with CDR running |
 | `test_fec` | **KP4 waterfall anchor** (threshold ≈ $2.4\times10^{-4}$, gain ≈ 6.9 dB); log-domain == direct binomial |
