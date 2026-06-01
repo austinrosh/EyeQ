@@ -64,6 +64,8 @@ class LinkConfig:
     channel_s4p: Optional[str] = None
     blocks: list[BlockConfig] = field(default_factory=list)
     analysis: dict[str, Any] = field(default_factory=dict)
+    fec: dict[str, Any] = field(default_factory=dict)
+    detector: dict[str, Any] = field(default_factory=dict)
 
 
 def default_analysis() -> dict[str, Any]:
@@ -72,6 +74,27 @@ def default_analysis() -> dict[str, Any]:
         "v_bins": 256,
         "phase_points": 32,
     }
+
+
+def default_fec() -> dict[str, Any]:
+    """FEC analysis-layer settings (post-FEC BER estimate; see analysis/fec.py)."""
+    return {
+        "enabled": False,
+        "scheme": "kp4",            # none | kp4 | kr4 | custom
+        "target_post_ber": 1e-15,
+        "error_model": "random",    # random (justified default) | bursty (coarse)
+        "burst_len_bits": 1,
+        "interleave_depth": 1,
+        "custom_n": 544,
+        "custom_k": 514,
+        "custom_m": 10,
+    }
+
+
+def default_detector() -> dict[str, Any]:
+    """Receiver detection mode. 'slicer'/'dfe' use the eye-tail BER; 'mlsd' uses the
+    sequence-error (minimum-distance) estimate. ``mlsd_taps`` is the trellis memory."""
+    return {"mode": "dfe", "mlsd_taps": 4}
 
 
 def default_link_config(
@@ -94,6 +117,8 @@ def default_link_config(
         rng_seed=rng_seed,
         blocks=cfg_blocks,
         analysis=default_analysis(),
+        fec=default_fec(),
+        detector=default_detector(),
     )
 
 

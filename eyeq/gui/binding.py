@@ -99,6 +99,8 @@ class BlockPanel(QtWidgets.QGroupBox):
         lay.setSpacing(1)
         self.controls: dict[str, ParamControl] = {}
         for p in block.params:
+            if p.hidden:  # surfaced elsewhere (e.g. the toolbar EQ-bypass toggles)
+                continue
             c = ParamControl(block.name, p)
             c.changed.connect(on_change)
             lay.addWidget(c)

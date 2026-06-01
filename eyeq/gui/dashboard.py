@@ -15,6 +15,7 @@ Parameter changes are routed by :class:`~eyeq.core.schema.Kind`:
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -22,12 +23,24 @@ from PySide6 import QtCore, QtWidgets
 from pyqtgraph.dockarea import Dock, DockArea
 
 from ..analysis import ber as _ber
+from ..analysis import fec as _fec
 from ..analysis.optimize import optimize_link
 from ..core.schema import Kind
 from ..engines import StatisticalEngine, ThreadWorker
 from ..io import build_pipeline, default_link_config, load, save
+from ..io.config import default_detector, default_fec
 from .binding import build_param_panel
+from .panels import BathtubWindow, DetectorWindow, FecWindow, ReportWindow
 from .plots import CascadePlot, EyePlot, HistPlot, SbrPlot
+
+# Equalizer-stage bypass toggles surfaced in the toolbar (label, block, param).
+_EQ_TOGGLES = [
+    ("CTLE", "ctle", "enabled"),
+    ("TX-FFE", "txffe", "ffe_enabled"),
+    ("TX-drv", "txffe", "driver_enabled"),
+    ("RX-FFE", "rxffe", "enabled"),
+    ("DFE", "dfe", "enabled"),
+]
 
 _BATCH = 15_000
 
@@ -41,12 +54,55 @@ class Controller:
         self.pipe = build_pipeline(cfg)
         self.worker = ThreadWorker(self.pipe, batch_symbols=_BATCH)
         self._running = False
+        self.fec_cfg = {**default_fec(), **(cfg.fec or {})}
+        self.fec_result = None
+        self.detector_cfg = {**default_detector(), **(cfg.detector or {})}
+        self._apply_detector_arch()
         self.recompute_statistical()
 
     # -- engine state ---------------------------------------------------------
     def recompute_statistical(self):
+        # Assess at the reach class's spec BER (per-preset) so the bathtub markers,
+        # eye opening, and COM are evaluated at the BER the link is designed to.
+        self.target_ber = self.pipe.ctx.reach.target_ber
         self.cascade, self.sbr, self.eye = self.stat.compute(self.pipe)
-        self.ber = _ber.assess(self.stat, self.pipe, self.sbr, phase_points=33, v_bins=512)
+        self.ber = self._assess_ber()
+        self._refresh_fec()
+
+    def _assess_ber(self):
+        """Branch the BER computation by detector: MLSD uses the sequence-error
+        (minimum-distance) estimate; slicer/DFE use the eye-tail method."""
+        if self.detector_cfg.get("mode") == "mlsd":
+            return _ber.assess_mlsd(self.stat, self.pipe, self.sbr, target_ber=self.target_ber,
+                                    mlsd_taps=int(self.detector_cfg.get("mlsd_taps", 4)))
+        return _ber.assess(self.stat, self.pipe, self.sbr,
+                           target_ber=self.target_ber, phase_points=33, v_bins=512)
+
+    def _apply_detector_arch(self):
+        """Selector owns architecture: 'dfe' -> DFE on; 'slicer'/'mlsd' -> DFE off."""
+        mode = self.detector_cfg.get("mode", "dfe")
+        try:
+            self.pipe.by_name("dfe").set_params(enabled=("on" if mode == "dfe" else "off"))
+        except KeyError:
+            pass
+
+    def on_detector_change(self, cfg: dict):
+        """Apply a new detector config: set the DFE architecture + re-assess the BER."""
+        self.detector_cfg = dict(cfg)
+        self._apply_detector_arch()
+        self.recompute_statistical()  # re-assess via the selected detector (+ FEC refresh)
+
+    def _refresh_fec(self):
+        """Recompute the post-FEC estimate from the current pre-FEC BER + FEC config.
+
+        Pure analysis (no engine/worker) — orthogonal to the EQ toggles and Auto-EQ.
+        """
+        self.fec_result = _fec.assess_fec(self.ber, self.pipe.ctx, self.fec_cfg)
+
+    def on_fec_change(self, cfg: dict):
+        """Apply a new FEC config and recompute the post-FEC result (live, cheap)."""
+        self.fec_cfg = dict(cfg)
+        self._refresh_fec()
 
     def latest(self):
         return self.worker.latest()
@@ -94,6 +150,7 @@ class Controller:
             self.cfg.reach_class = reach
         self.worker.stop()
         self.pipe = build_pipeline(self.cfg)  # fresh blocks (EQ resets)
+        self._apply_detector_arch()           # re-impose the detector's DFE state on the fresh pipe
         self.recompute_statistical()
         self.worker = ThreadWorker(self.pipe, batch_symbols=_BATCH)
         if self._running:
@@ -110,11 +167,15 @@ class Controller:
 
     def load_config(self, path):
         self.cfg = load(path)
-        return self.set_scenario()
+        self.fec_cfg = {**default_fec(), **(self.cfg.fec or {})}
+        self.detector_cfg = {**default_detector(), **(self.cfg.detector or {})}
+        return self.set_scenario()  # _apply_detector_arch + recompute use the new cfgs
 
     def save_config(self, path):
         for bc in self.cfg.blocks:
             bc.params = self.pipe.by_name(_type_to_name(bc.type)).get_params()
+        self.cfg.fec = dict(self.fec_cfg)
+        self.cfg.detector = dict(self.detector_cfg)
         save(self.cfg, path)
 
 
@@ -154,6 +215,13 @@ class Dashboard(QtWidgets.QMainWindow):
         d_sbr.addWidget(self.sbr)
         d_ctl.addWidget(panel)
 
+        # Lazily-created side windows (bathtub curves, link report, FEC) + export dir.
+        self.bathtub_win: BathtubWindow | None = None
+        self.report_win: ReportWindow | None = None
+        self.fec_win: FecWindow | None = None
+        self.detector_win: DetectorWindow | None = None
+        self._io_dir = ""
+
         self._build_toolbar()
         self._update_static_plots()
         self._resync_panels()  # reflect values build_pipeline set (e.g. channel.reach)
@@ -173,6 +241,50 @@ class Dashboard(QtWidgets.QMainWindow):
         auto = QtWidgets.QPushButton("Auto-EQ")
         auto.clicked.connect(self._auto_eq)
         tb.addWidget(auto)
+        tb.addSeparator()
+
+        # Per-stage EQ bypass toggles — isolate any stage's contribution. Each is
+        # a true bypass (signal unmodified), independent of the auto-EQ solver.
+        tb.addWidget(QtWidgets.QLabel(" EQ "))
+        self.eq_checks: dict[tuple[str, str], QtWidgets.QCheckBox] = {}
+        for label, block, param in _EQ_TOGGLES:
+            cb = QtWidgets.QCheckBox(label)
+            cb.setChecked(self._eq_is_on(block, param))
+            cb.toggled.connect(
+                lambda on, b=block, p=param: self._on_param(b, p, "on" if on else "off")
+            )
+            tb.addWidget(cb)
+            self.eq_checks[(block, param)] = cb
+        tb.addSeparator()
+
+        # Receiver detector: peer to the EQ toggles; owns the slicer/DFE/MLSD architecture.
+        tb.addWidget(QtWidgets.QLabel(" Detector "))
+        self.detector_combo = QtWidgets.QComboBox()
+        for label, key in (("Slicer", "slicer"), ("DFE", "dfe"), ("MLSD", "mlsd")):
+            self.detector_combo.addItem(label, key)
+        i = self.detector_combo.findData(self.ctrl.detector_cfg.get("mode", "dfe"))
+        self.detector_combo.setCurrentIndex(max(0, i))
+        self.detector_combo.currentIndexChanged.connect(self._on_detector_mode)
+        tb.addWidget(self.detector_combo)
+        det_btn = QtWidgets.QPushButton("Detector…")
+        det_btn.clicked.connect(self._toggle_detector_window)
+        tb.addWidget(det_btn)
+        tb.addSeparator()
+
+        for label, slot in (("Bathtub", self._toggle_bathtub), ("Report", self._toggle_report)):
+            b = QtWidgets.QPushButton(label)
+            b.clicked.connect(slot)
+            tb.addWidget(b)
+        tb.addSeparator()
+
+        # FEC: a master on/off (live) + a settings window for scheme/params.
+        self.fec_check = QtWidgets.QCheckBox("FEC")
+        self.fec_check.setChecked(bool(self.ctrl.fec_cfg.get("enabled", False)))
+        self.fec_check.toggled.connect(self._on_fec_toggle)
+        tb.addWidget(self.fec_check)
+        fec_btn = QtWidgets.QPushButton("FEC…")
+        fec_btn.clicked.connect(self._toggle_fec_window)
+        tb.addWidget(fec_btn)
         tb.addSeparator()
 
         tb.addWidget(QtWidgets.QLabel(" Mod "))
@@ -203,20 +315,129 @@ class Dashboard(QtWidgets.QMainWindow):
         if kind in ("structural", "scenario"):
             self._resync_panels()
 
+    def _detector_label(self):
+        return {"slicer": "Slicer", "dfe": "DFE", "mlsd": "MLSD"}.get(
+            self.ctrl.detector_cfg.get("mode", "dfe"), "DFE")
+
     def _update_static_plots(self):
+        ber = self.ctrl.ber
         self.cascade.update_cascade(self.ctrl.cascade)
         self.sbr.update_sbr(self.ctrl.sbr)
-        self.hist.update_bathtub(self.ctrl.ber)
+        self.eye.set_metrics(ber.eye_width_ui, ber.target_ber)
+        self.eye.set_detector_note(
+            "MLSD active — eye opening is not the BER predictor"
+            if self.ctrl.detector_cfg.get("mode") == "mlsd" else "")
+        if self.bathtub_win is not None and self.bathtub_win.isVisible():
+            self.bathtub_win.update_bathtub(ber, self.ctrl.fec_result, self._detector_label())
+
+    def _refresh_report(self):
+        if self.report_win is not None and self.report_win.isVisible():
+            snap = self.ctrl.latest()
+            self.report_win.refresh(self.ctrl.ber, snap.stats if snap else {}, self.ctrl.pipe,
+                                    self.ctrl.fec_result, self.ctrl.detector_cfg)
 
     def _resync_panels(self):
         for name, panel in self.panels.items():
             panel.sync(self.ctrl.pipe.by_name(name))
+        self._resync_eq()
 
     def _tick(self):
         snap = self.ctrl.latest()
         if snap is not None:
             self.eye.update_eye(snap)
             self.hist.update_hist(snap)
+            self._refresh_report()
+
+    # -- EQ bypass toggles ----------------------------------------------------
+    def _eq_is_on(self, block: str, param: str) -> bool:
+        try:
+            return self.ctrl.pipe.by_name(block).get(param) == "on"
+        except KeyError:
+            return False
+
+    def _resync_eq(self):
+        """Reflect the pipeline's enable flags (after rebuild / load / auto-EQ)."""
+        for (block, param), cb in self.eq_checks.items():
+            cb.blockSignals(True)
+            cb.setChecked(self._eq_is_on(block, param))
+            cb.blockSignals(False)
+
+    # -- side windows ---------------------------------------------------------
+    def _toggle_bathtub(self):
+        if self.bathtub_win is None:
+            self.bathtub_win = BathtubWindow()
+            self.bathtub_win.set_io_dir(self._io_dir)
+        self.bathtub_win.update_bathtub(self.ctrl.ber, self.ctrl.fec_result, self._detector_label())
+        self.bathtub_win.show()
+        self.bathtub_win.raise_()
+
+    def _toggle_report(self):
+        if self.report_win is None:
+            self.report_win = ReportWindow()
+            self.report_win.set_io_dir(self._io_dir)
+        self.report_win.show()
+        self.report_win.raise_()
+        self._refresh_report()
+
+    # -- FEC ------------------------------------------------------------------
+    def _on_fec_toggle(self, on: bool):
+        self._apply_fec_cfg({**self.ctrl.fec_cfg, "enabled": on})
+
+    def _toggle_fec_window(self):
+        if self.fec_win is None:
+            self.fec_win = FecWindow(self.ctrl.fec_cfg, self._apply_fec_cfg, self.ctrl.cfg.modulation)
+        self.fec_win.set_modulation(self.ctrl.cfg.modulation)
+        self.fec_win.show()
+        self.fec_win.raise_()
+
+    def _apply_fec_cfg(self, cfg: dict):
+        """Single entry point for any FEC config change (toolbar toggle or window)."""
+        self.ctrl.on_fec_change(cfg)
+        self.fec_check.blockSignals(True)
+        self.fec_check.setChecked(bool(cfg.get("enabled", False)))
+        self.fec_check.blockSignals(False)
+        if self.fec_win is not None:
+            self.fec_win.sync(cfg)  # blocks its own signals
+        self._update_fec_views()
+
+    def _update_fec_views(self):
+        if self.bathtub_win is not None and self.bathtub_win.isVisible():
+            self.bathtub_win.update_bathtub(self.ctrl.ber, self.ctrl.fec_result, self._detector_label())
+        self._refresh_report()
+
+    # -- detector -------------------------------------------------------------
+    def _on_detector_mode(self, *_a):
+        self._apply_detector_cfg({**self.ctrl.detector_cfg, "mode": self.detector_combo.currentData()})
+
+    def _toggle_detector_window(self):
+        if self.detector_win is None:
+            self.detector_win = DetectorWindow(self.ctrl.detector_cfg, self._apply_detector_cfg,
+                                               self.ctrl.cfg.modulation)
+        self.detector_win.set_modulation(self.ctrl.cfg.modulation)
+        self.detector_win.show()
+        self.detector_win.raise_()
+
+    def _apply_detector_cfg(self, cfg: dict):
+        """Single entry point for any detector change (toolbar combo or window)."""
+        self.ctrl.on_detector_change(cfg)        # sets DFE arch + re-assesses the BER
+        self.detector_combo.blockSignals(True)
+        i = self.detector_combo.findData(cfg.get("mode", "dfe"))
+        self.detector_combo.setCurrentIndex(max(0, i))
+        self.detector_combo.blockSignals(False)
+        if self.detector_win is not None:
+            self.detector_win.sync(cfg)
+        self._resync_eq()            # the DFE checkbox follows the selector
+        self._update_static_plots()  # eye note + bathtub
+        self._refresh_report()
+
+    def _set_io_dir(self, path: str):
+        self._io_dir = path
+        for p in (self.eye, self.cascade, self.sbr, self.hist):
+            p.set_io_dir(path)
+        if self.bathtub_win is not None:
+            self.bathtub_win.set_io_dir(path)
+        if self.report_win is not None:
+            self.report_win.set_io_dir(path)
 
     # -- toolbar slots --------------------------------------------------------
     def _toggle_run(self, on):
@@ -234,10 +455,22 @@ class Dashboard(QtWidgets.QMainWindow):
         # The block/param structure is identical across rates and modulations,
         # so the controls (keyed by name) stay valid — just re-sync their values.
         self._resync_panels()
+        # modulation may change the FEC pairing advisory and the MLSD trellis cap
+        if self.fec_win is not None:
+            self.fec_win.set_modulation(self.ctrl.cfg.modulation)
+        if self.detector_win is not None:
+            self.detector_win.set_modulation(self.ctrl.cfg.modulation)
+        self.detector_combo.blockSignals(True)  # set_scenario may have re-imposed the DFE arch
+        i = self.detector_combo.findData(self.ctrl.detector_cfg.get("mode", "dfe"))
+        self.detector_combo.setCurrentIndex(max(0, i))
+        self.detector_combo.blockSignals(False)
+        self._update_fec_views()
 
     def _load(self):
-        path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Load config", "", "Config (*.yaml *.json)")
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self, "Load config", self._io_dir, "Config (*.yaml *.json)")
         if path:
+            self._set_io_dir(os.path.dirname(path))
             self.ctrl.load_config(path)
             self.mod_combo.blockSignals(True)
             self.rate_combo.blockSignals(True)
@@ -247,14 +480,22 @@ class Dashboard(QtWidgets.QMainWindow):
             self.rate_combo.blockSignals(False)
             self._update_static_plots()
             self._resync_panels()
+            self._apply_fec_cfg(self.ctrl.fec_cfg)        # reflect loaded FEC settings in the UI
+            self._apply_detector_cfg(self.ctrl.detector_cfg)  # and the loaded detector mode
 
     def _save(self):
-        path, _ = QtWidgets.QFileDialog.getSaveFileName(self, "Save config", "link.yaml", "Config (*.yaml *.json)")
+        default = os.path.join(self._io_dir, "link.yaml") if self._io_dir else "link.yaml"
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self, "Save config", default, "Config (*.yaml *.json)")
         if path:
+            self._set_io_dir(os.path.dirname(path))
             self.ctrl.save_config(path)
 
     def closeEvent(self, event):
         self.ctrl.stop()
+        for win in (self.bathtub_win, self.report_win, self.fec_win, self.detector_win):
+            if win is not None:
+                win.close()
         super().closeEvent(event)
 
 

@@ -60,6 +60,7 @@ class Param:
     step: Optional[float] = None
     choices: Optional[Sequence] = None
     also_statistical: bool = False
+    hidden: bool = False  # kept out of the auto-generated control panel (surfaced elsewhere)
 
     @property
     def is_choice(self) -> bool:
@@ -87,4 +88,5 @@ class Param:
             "kind": self.kind.name.lower(),
             "step": self.step,
             "choices": list(self.choices) if self.choices is not None else None,
+            "hidden": self.hidden,
         }

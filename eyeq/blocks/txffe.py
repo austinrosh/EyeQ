@@ -28,6 +28,8 @@ from ..core.schema import Kind, Param
 class TXFFE(LTIBlock):
     name = "txffe"
     PARAMS = [
+        Param("ffe_enabled", 0, 0, "on", kind=Kind.LTI, choices=("off", "on"), hidden=True),
+        Param("driver_enabled", 0, 0, "on", kind=Kind.LTI, choices=("off", "on"), hidden=True),
         Param("swing", 0.0, 1.2, 0.8, unit="V", kind=Kind.LTI),
         Param("pre", -0.5, 0.5, 0.0, kind=Kind.LTI),
         Param("post", -0.5, 0.5, 0.0, kind=Kind.LTI),
@@ -83,4 +85,10 @@ class TXFFE(LTIBlock):
         return np.exp(-((np.pi * f / a) ** 2)).astype(np.complex128)
 
     def transfer(self, ctx: SimContext) -> NDArray[np.complex128]:
-        return self.ffe_transfer(ctx) * self.driver_transfer(ctx)
+        # The FFE de-emphasis and the analog driver bandwidth are independently
+        # bypassable: disabling the FFE isolates the equalizer's contribution,
+        # disabling the driver gives an ideal full-bandwidth launch.
+        ones = np.ones(ctx.freq_grid().size, dtype=np.complex128)
+        ffe = self.ffe_transfer(ctx) if self.get("ffe_enabled") == "on" else ones
+        drv = self.driver_transfer(ctx) if self.get("driver_enabled") == "on" else ones
+        return ffe * drv

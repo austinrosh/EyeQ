@@ -20,6 +20,7 @@ from dataclasses import dataclass
 
 import numpy as np
 from numpy.typing import NDArray
+from scipy.special import erfc, erfcinv
 
 from ..core.pipeline import Pipeline
 
@@ -39,6 +40,10 @@ class BerResult:
     v_bathtub: NDArray         # log10(SER) vs decision level
     eye_height_v: float        # vertical opening at target_ber [V]
     eye_width_ui: float        # horizontal opening at target_ber [UI]
+    # detector provenance (defaults keep the decision-point path's positional construction valid)
+    detector: str = "decision"      # "decision" (slicer/DFE eye tail) | "mlsd" (sequence error)
+    mlsd_dmin: float = float("nan")  # MLSD minimum distance [V]
+    mlsd_truncated: bool = False     # the d_min search hit its node cap (estimate is approximate)
 
 
 def assess(
@@ -105,6 +110,72 @@ def assess(
     return BerResult(
         ser, ber, com_db, float(t_axis[best_pi]), target_ber,
         t_axis, h_bathtub, v_eye, v_bathtub, eye_height_v, eye_width_ui,
+    )
+
+
+def assess_mlsd(
+    eng,
+    pipe: Pipeline,
+    sbr=None,
+    *,
+    target_ber: float = 1e-12,
+    mlsd_taps: int = 4,
+    v_bins: int = 256,
+    phase_points: int = 33,
+) -> BerResult:
+    """MLSD BER via the minimum-distance union bound (see :mod:`eyeq.analysis.mlsd`).
+
+    Returns the *same* :class:`BerResult` as :func:`assess` so the report, bathtub,
+    and FEC layers consume it identically — only the computation differs. The
+    bathtub curves come from the sequence-error model, not the eye tail.
+    """
+    from . import mlsd as _mlsd
+
+    ctx = pipe.ctx
+    sbr = sbr or eng.sbr(pipe)
+    levels = ctx.levels
+    bits = max(int(np.log2(levels.size)), 1)
+    pulse, m0, sps = sbr.sbr, sbr.main_idx, ctx.sps
+    m_range = sbr.cursor_k                      # cursor positions (ascending: pre..main..post)
+    sigma = eng._amplitude_sigma(pipe)          # front-end-referred noise std [V]
+    L = int(min(max(int(mlsd_taps), 0), _mlsd.l_cap(levels.size)))
+
+    phase_offsets = np.round(np.linspace(-0.5, 0.5, phase_points, endpoint=False) * sps).astype(int)
+    t_axis = phase_offsets / sps
+
+    sers = np.empty(phase_points)
+    results = []
+    for pi, delta in enumerate(phase_offsets):
+        h = eng._sample_cursors(pulse, m0 + delta, m_range, sps)  # per-UI taps [V], in position order
+        r = _mlsd.sequence_ber(h, levels, sigma, L=L)
+        sers[pi] = max(r.ser, _FLOOR)
+        results.append(r)
+
+    best_pi = int(np.argmin(sers))
+    rb = results[best_pi]
+    ser = float(max(rb.ser, _FLOOR))
+    ber = ser / bits
+    h_bathtub = np.log10(np.maximum(sers, _FLOOR))           # log10(SER) vs phase (timing bathtub)
+    eye_width_ui = _opening_width(t_axis, sers, target_ber)
+
+    # Vertical analog: BER vs available margin voltage (no decision threshold under MLSD).
+    margin = 0.5 * float(np.sqrt(max(rb.d2_min, 0.0)))       # d_min/2 — the MLSD effective half-opening
+    v_eye = np.linspace(0.0, max(1.3 * margin, 1e-6), v_bins)
+    if sigma > 0.0:
+        v_ser = max(rb.n_events, 1) * 0.5 * erfc(v_eye / (sigma * np.sqrt(2.0)))
+    else:
+        v_ser = np.where(v_eye > 0.0, _FLOOR, 0.5)
+    v_bathtub = np.log10(np.maximum(v_ser, _FLOOR))
+
+    # COM analog: the min-distance margin vs the noise amplitude at the target.
+    qinv = float(np.sqrt(2.0) * erfcinv(2.0 * target_ber))
+    a_noise = sigma * qinv
+    com_db = float(20.0 * np.log10(margin / a_noise)) if (a_noise > 0.0 and margin > 0.0) else 99.0
+
+    return BerResult(
+        ser, ber, com_db, float(t_axis[best_pi]), target_ber,
+        t_axis, h_bathtub, v_eye, v_bathtub, margin, eye_width_ui,
+        detector="mlsd", mlsd_dmin=2.0 * margin, mlsd_truncated=bool(rb.truncated),
     )
 
 

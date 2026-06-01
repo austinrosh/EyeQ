@@ -21,6 +21,7 @@ from ..core.schema import Kind, Param
 class RXFFE(LTIBlock):
     name = "rxffe"
     PARAMS = [
+        Param("enabled", 0, 0, "on", kind=Kind.LTI, choices=("off", "on"), hidden=True),
         Param("n_taps", 1, 31, 1, kind=Kind.STRUCTURAL, step=1),
         Param("adapt", 0, 0, "off", kind=Kind.NONLINEAR,
               choices=("off", "lms", "sign-lms")),
@@ -56,6 +57,8 @@ class RXFFE(LTIBlock):
 
     def transfer(self, ctx: SimContext) -> NDArray[np.complex128]:
         f = ctx.freq_grid()
+        if self.get("enabled") == "off":  # true bypass (identity), preserving solved taps
+            return np.ones(f.size, dtype=np.complex128)
         taps = self.taps()
         k = np.arange(taps.size) - self.main_pos()  # centered: no net bulk delay
         return (taps[None, :] * np.exp(-1j * 2 * np.pi * np.outer(f, k) * ctx.ui)).sum(1)

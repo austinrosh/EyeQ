@@ -149,6 +149,15 @@ class ThreadWorker:
             self._n_batches += 1
 
             image = self._accum / np.maximum(self._accum.sum(1, keepdims=True), 1e-30)
+
+            # Eye height at the recovered sampling phase (item 2): measured on the
+            # smooth accumulated image rather than the noisy single batch, at the
+            # column the CDR actually samples (the eye's dashed marker).
+            ctx = self.pipe.ctx
+            main_cursor = self._sbr.main_cursor
+            col = int(round(res.recovered_phase_ui * ctx.sps + ctx.sps // 2))
+            eye_h_phase = self._stat._eye_height_at_col(image, self._v, main_cursor, ctx.levels, col)
+
             snap = DensitySnapshot(
                 t_ui=res.t_ui,
                 v=self._v,
@@ -159,6 +168,7 @@ class ThreadWorker:
                     "mse_snr_db": res.mse_snr_db,
                     "ser": res.ser,
                     "eye_height_v": res.eye_height_v,
+                    "eye_height_at_phase_v": float(eye_h_phase),
                     "recovered_phase_ui": res.recovered_phase_ui,
                     "n_batches": self._n_batches,
                     "ui_per_batch": res.n_symbols,

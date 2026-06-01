@@ -47,6 +47,47 @@ def test_controller_constructs():
     assert c.sbr.main_cursor > 0
 
 
+def test_controller_target_ber_tracks_reach():
+    # the assessment target is the reach class's spec BER, and follows a scenario change
+    c = Controller(default_link_config(modulation="PAM4", reach_class="LR"))
+    assert c.target_ber == c.pipe.ctx.reach.target_ber == 1e-4
+    c.set_scenario(reach="XSR")
+    assert c.target_ber == c.pipe.ctx.reach.target_ber == 1e-9
+    assert c.ber.target_ber == 1e-9
+
+
+def test_controller_detector_owns_architecture():
+    c = Controller(default_link_config(modulation="PAM4", reach_class="VSR"))
+    assert c.detector_cfg["mode"] == "dfe"                       # default
+    assert c.pipe.by_name("dfe").get("enabled") == "on"
+    assert c.ber.detector == "decision"
+    # MLSD: DFE off, BER via the sequence-error path
+    c.on_detector_change({**c.detector_cfg, "mode": "mlsd"})
+    assert c.pipe.by_name("dfe").get("enabled") == "off"
+    assert c.ber.detector == "mlsd" and c.ber.mlsd_dmin > 0
+    # Slicer: DFE off, BER back to the decision path
+    c.on_detector_change({**c.detector_cfg, "mode": "slicer"})
+    assert c.pipe.by_name("dfe").get("enabled") == "off" and c.ber.detector == "decision"
+    # FEC runs on top of whatever detector is active
+    c.on_detector_change({**c.detector_cfg, "mode": "mlsd"})
+    c.on_fec_change({**c.fec_cfg, "enabled": True, "scheme": "kp4"})
+    assert c.fec_result.enabled and c.fec_result.pre_ber == c.ber.ber
+
+
+def test_controller_fec_independent_of_eq():
+    c = Controller(default_link_config(modulation="PAM4", reach_class="VSR"))
+    assert c.fec_result is not None and not c.fec_result.enabled  # off by default
+    c.on_fec_change({**c.fec_cfg, "enabled": True, "scheme": "kp4"})
+    assert c.fec_result.enabled and c.fec_result.scheme_key == "kp4"
+    # toggling an EQ stage must not disturb the FEC config/result
+    fec_before = dict(c.fec_cfg)
+    c.on_param("ctle", "enabled", "off")
+    assert c.fec_cfg == fec_before and c.fec_result.enabled
+    # and a FEC change must not disturb the EQ state
+    c.on_fec_change({**c.fec_cfg, "enabled": False})
+    assert c.pipe.by_name("ctle").get("enabled") == "off"
+
+
 def test_routing_by_kind():
     c = _ctrl()
     assert c.on_param("ctle", "fz", 0.45) == "lti"

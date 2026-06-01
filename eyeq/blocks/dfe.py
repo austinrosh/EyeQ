@@ -26,6 +26,7 @@ class DFE(BlockBase):
     is_lti = False
     is_tail = True  # marks the start of the nonlinear tail
     PARAMS = [
+        Param("enabled", 0, 0, "on", kind=Kind.NONLINEAR, choices=("off", "on"), hidden=True),
         Param("n_taps", 0, 32, 1, kind=Kind.STRUCTURAL, step=1),
         Param("h1", -100.0, 100.0, 0.0, unit="mV", kind=Kind.NONLINEAR),
         Param("adapt", 0, 0, "off", kind=Kind.NONLINEAR,

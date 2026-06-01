@@ -316,10 +316,10 @@ class StatisticalEngine:
             hi += 1
         return (hi - lo) * dv
 
-    def _eye_height(
-        self, pdf: NDArray, v: NDArray, main_cursor: float, levels: NDArray, frac: float = 1e-3
-    ) -> tuple[float, int]:
-        """Worst inner-eye opening over the M-1 decision thresholds, best phase.
+    def _eye_opening_in_col(
+        self, col: NDArray, v: NDArray, main_cursor: float, levels: NDArray, frac: float = 1e-3
+    ) -> float:
+        """Worst inner-eye opening over the M-1 thresholds for a single phase column.
 
         The thresholds sit at the level midpoints scaled by the main cursor
         (``main_cursor * (L_i + L_{i+1}) / 2``); measuring the open gap *around a
@@ -328,11 +328,24 @@ class StatisticalEngine:
         transient histogram score consistently.
         """
         thr_v = abs(main_cursor) * 0.5 * (levels[:-1] + levels[1:])
+        lim = col.max() * frac
+        return min((self._opening_at(col, v, tv, lim) for tv in thr_v), default=0.0)
+
+    def _eye_height(
+        self, pdf: NDArray, v: NDArray, main_cursor: float, levels: NDArray, frac: float = 1e-3
+    ) -> tuple[float, int]:
+        """Best inner-eye opening across all sampling phases (height, best column)."""
         best_h, best_pi = 0.0, 0
         for pi in range(pdf.shape[0]):
-            col = pdf[pi]
-            lim = col.max() * frac
-            inner = min((self._opening_at(col, v, tv, lim) for tv in thr_v), default=0.0)
+            inner = self._eye_opening_in_col(pdf[pi], v, main_cursor, levels, frac)
             if inner > best_h:
                 best_h, best_pi = inner, pi
         return best_h, best_pi
+
+    def _eye_height_at_col(
+        self, pdf: NDArray, v: NDArray, main_cursor: float, levels: NDArray, col: int,
+        frac: float = 1e-3,
+    ) -> float:
+        """Inner-eye opening at a *specific* sampling phase column (e.g. the CDR phase)."""
+        col = int(np.clip(col, 0, pdf.shape[0] - 1))
+        return self._eye_opening_in_col(pdf[col], v, main_cursor, levels, frac)

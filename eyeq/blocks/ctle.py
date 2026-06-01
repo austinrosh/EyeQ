@@ -33,6 +33,7 @@ from ..spectral import from_db
 class CTLE(LTIBlock):
     name = "ctle"
     PARAMS = [
+        Param("enabled", 0, 0, "on", kind=Kind.LTI, choices=("off", "on"), hidden=True),
         Param("dc_gain", -20.0, 0.0, 0.0, unit="dB", kind=Kind.LTI),
         Param("fz", 0.1, 2.0, 0.5, unit="xfnyq", kind=Kind.LTI),
         Param("fp", 0.5, 3.0, 1.0, unit="xfnyq", kind=Kind.LTI),
@@ -42,6 +43,8 @@ class CTLE(LTIBlock):
 
     def transfer(self, ctx: SimContext) -> NDArray[np.complex128]:
         f = ctx.freq_grid()
+        if self.get("enabled") == "off":  # true bypass: pass the signal unmodified
+            return np.ones(f.size, dtype=np.complex128)
         s = 1j * 2.0 * np.pi * f
         wz = 2.0 * np.pi * self.get("fz") * ctx.f_nyq
         wp = 2.0 * np.pi * self.get("fp") * ctx.f_nyq

@@ -105,13 +105,18 @@ class TransientEngine:
         # The Numba kernel runs the slicer + DFE + CDR; the pure LTI-only case
         # (no DFE taps, no adaptation, static clock) stays fully vectorized.
         dfe = pipe.by_name("dfe") if "dfe" in pipe.names() else None
-        adapt = self._adapt_mode(dfe)
+        # Bypass toggle (item 1): a disabled DFE contributes no feedback and never
+        # adapts, even when the kernel still runs for the CDR — a true bypass, not
+        # zeroed taps. We hand the kernel `None` so its feedback path is empty.
+        dfe_enabled = dfe is not None and dfe.get("enabled") == "on"
+        dfe_eff = dfe if dfe_enabled else None
+        adapt = self._adapt_mode(dfe_eff)
         cdr_mode, kp, ki = self._cdr_params(pipe)
-        dfe_on = dfe is not None and int(dfe.get("n_taps")) > 0 and (dfe.is_active() or adapt)
+        dfe_on = dfe_enabled and int(dfe.get("n_taps")) > 0 and (dfe.is_active() or adapt)
         recovered_ui = float((dec_col - half) / sps)
         if dfe_on or cdr_mode != 0:
             density, mse_snr, ser, recovered_ui = self._dfe_eye(
-                windows, sidx, ctx, sbr, dfe, dec_col, v, dv, nb, adapt, cdr_mode, kp, ki
+                windows, sidx, ctx, sbr, dfe_eff, dec_col, v, dv, nb, adapt, cdr_mode, kp, ki
             )
         else:
             density, mse_snr, ser = self._lti_eye(
