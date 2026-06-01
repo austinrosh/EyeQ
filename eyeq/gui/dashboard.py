@@ -259,16 +259,29 @@ class Dashboard(QtWidgets.QMainWindow):
 
 
 def main(argv=None):
+    import signal
+
     parser = argparse.ArgumentParser(description="EyeQ live dashboard")
     parser.add_argument("--config", type=Path, default=None)
     args = parser.parse_args(argv)
     cfg = load(args.config) if args.config else default_link_config(modulation="PAM4", reach_class="VSR")
 
     app = QtWidgets.QApplication(sys.argv)
+    # Make Ctrl+C in the launching terminal quit immediately (Qt's C++ event loop
+    # otherwise swallows it). The worker is a daemon thread, so the process exits
+    # cleanly. Closing the window (red button / Cmd+Q) also shuts down via closeEvent.
+    signal.signal(signal.SIGINT, signal.SIG_DFL)
+    # Wake the event loop periodically so the signal is delivered promptly.
+    nudge = QtCore.QTimer()
+    nudge.start(200)
+    nudge.timeout.connect(lambda: None)
+
     win = Dashboard(cfg)
     win.resize(1280, 760)
     win.show()
     win.run_btn.setChecked(True)  # auto-start the transient engine
+    print("EyeQ dashboard running. Close the window (red button / Cmd+Q) or press "
+          "Ctrl+C here to quit.")
     return app.exec()
 
 
