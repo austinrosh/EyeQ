@@ -66,6 +66,7 @@ class LinkConfig:
     analysis: dict[str, Any] = field(default_factory=dict)
     fec: dict[str, Any] = field(default_factory=dict)
     detector: dict[str, Any] = field(default_factory=dict)
+    ui: dict[str, Any] = field(default_factory=dict)
 
 
 def default_analysis() -> dict[str, Any]:
@@ -97,6 +98,21 @@ def default_detector() -> dict[str, Any]:
     return {"mode": "dfe", "mlsd_taps": 4}
 
 
+def default_ui() -> dict[str, Any]:
+    """Dashboard view settings (theme, eye colormap, density scale, amplitude mode).
+
+    ``amp_mode`` 'fixed' frames the eye/histogram against ±swing/2 (so the eye breathes
+    with loss); 'auto' fits to the data. ``density_scale`` 'log' makes low-density tails
+    visible on the warm colormaps.
+    """
+    return {
+        "theme": "dark",            # dark | light
+        "eye_colormap": "turbo",    # turbo | jet | inferno | magma | plasma | hot | viridis | gray
+        "density_scale": "log",     # log | linear
+        "amp_mode": "fixed",        # fixed (±swing/2) | auto
+    }
+
+
 def default_link_config(
     *,
     data_rate_gbps: float = 112.0,
@@ -119,6 +135,7 @@ def default_link_config(
         analysis=default_analysis(),
         fec=default_fec(),
         detector=default_detector(),
+        ui=default_ui(),
     )
 
 

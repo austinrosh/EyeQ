@@ -28,6 +28,20 @@ from .statistical import StatisticalEngine
 from .transient import TransientEngine
 
 
+# Eye liveliness. The accumulator is x[n] = decay*x[n-1] + batch, so it averages
+# ~1/(1-decay) batches: small decay = a live, shimmering eye that snaps to changes;
+# large decay = a smooth, persistent eye. Mapping the user-facing "avg factor" N to
+# decay = 1 - 1/N makes N the effective number of batches averaged. Clamped so N=1
+# still shows a little persistence and large N never fully freezes.
+_DECAY_MIN, _DECAY_MAX = 0.5, 0.97
+
+
+def decay_for(avg_factor: float) -> float:
+    """Map an eye-averaging factor (>=1) to an exponential-decay coefficient."""
+    n = max(1.0, float(avg_factor))
+    return float(min(_DECAY_MAX, max(_DECAY_MIN, 1.0 - 1.0 / n)))
+
+
 @dataclass(frozen=True)
 class DensitySnapshot:
     t_ui: NDArray
@@ -56,6 +70,7 @@ class ThreadWorker:
         self._pending: dict[str, dict[str, Any]] = {}
         self._pending_ctx = None
         self._dirty = False
+        self._clear = False
         self._running = False
         self._thread: threading.Thread | None = None
         self._front: DensitySnapshot | None = None
@@ -73,7 +88,11 @@ class ThreadWorker:
     def _refresh(self) -> None:
         """Recompute the SBR and a voltage grid sized to it; reset accumulation."""
         self._sbr = self._stat.sbr(self.pipe)
-        v_peak = max(1.15 * float(np.sum(np.abs(self._sbr.cursors))), 1e-6)
+        # Size the grid to the worst-case excursion (sum of |cursors|) with generous
+        # headroom: an equalizing RX FFE overshoots past that sum (up to ~1.4x on the
+        # hardest reaches), and samples beyond the grid clamp into the edge bins — a
+        # bright "clipped" band at the top/bottom of the eye. 1.5x keeps the eye clear.
+        v_peak = max(1.5 * float(np.sum(np.abs(self._sbr.cursors))), 1e-6)
         self._v = np.linspace(-v_peak, v_peak, self.engine.v_bins)
         self._accum = None
 
@@ -113,6 +132,19 @@ class ThreadWorker:
         with self._lock:
             self._dirty = True
 
+    def clear_accumulation(self) -> None:
+        """Drop the decayed eye so the next batch shows the current pipeline at once.
+
+        Used for NONLINEAR edits (DFE tap, CDR, adapt) that the worker already picks
+        up from the shared pipeline but which would otherwise fade in slowly under
+        the exponential decay — clearing makes the eye visibly jump to the change."""
+        with self._lock:
+            self._clear = True
+
+    def set_decay(self, decay: float) -> None:
+        """Set the eye-accumulation decay (eye liveliness) live; see :func:`decay_for`."""
+        self.decay = float(decay)
+
     def latest(self) -> DensitySnapshot | None:
         with self._lock:
             return self._front
@@ -123,6 +155,7 @@ class ThreadWorker:
             updates, self._pending = self._pending, {}
             ctx, self._pending_ctx = self._pending_ctx, None
             ext_dirty, self._dirty = self._dirty, False
+            clear, self._clear = self._clear, False
         if ctx is not None:
             self.pipe.ctx = ctx
             self._lti_dirty = True
@@ -132,6 +165,8 @@ class ThreadWorker:
                 self._lti_dirty = True
         if ext_dirty:
             self._lti_dirty = True
+        if clear:  # NONLINEAR change: keep the SBR/grid, just reset the decayed eye
+            self._accum = None
 
     def _loop(self) -> None:
         while self._running:

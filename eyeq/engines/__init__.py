@@ -17,7 +17,7 @@ from .statistical import (
     StatisticalEngine,
 )
 from .transient import TransientEngine, TransientResult
-from .worker import DensitySnapshot, ThreadWorker
+from .worker import DensitySnapshot, ThreadWorker, decay_for
 
 __all__ = [
     "StatisticalEngine",
@@ -28,4 +28,5 @@ __all__ = [
     "TransientResult",
     "ThreadWorker",
     "DensitySnapshot",
+    "decay_for",
 ]

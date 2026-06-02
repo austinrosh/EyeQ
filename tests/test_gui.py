@@ -56,6 +56,18 @@ def test_controller_target_ber_tracks_reach():
     assert c.ber.target_ber == 1e-9
 
 
+def test_controller_ui_defaults_and_full_scale():
+    from eyeq.gui.dashboard import _AMP_HEADROOM
+
+    c = Controller(default_link_config(modulation="PAM4", reach_class="VSR"))
+    assert c.ui_cfg["theme"] == "dark" and c.ui_cfg["eye_colormap"] == "turbo"
+    assert c.ui_cfg["amp_mode"] == "fixed"
+    # fixed-mode amplitude full-scale is ±swing/2, widened by the anti-clip headroom
+    swing = c.pipe.by_name("txffe").get("swing")
+    assert c.full_scale() == pytest.approx(swing / 2.0 * _AMP_HEADROOM)
+    assert _AMP_HEADROOM > 1.0  # frames wider than the launch swing (no top/bottom clip)
+
+
 def test_controller_detector_owns_architecture():
     c = Controller(default_link_config(modulation="PAM4", reach_class="VSR"))
     assert c.detector_cfg["mode"] == "dfe"                       # default

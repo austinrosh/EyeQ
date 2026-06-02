@@ -89,9 +89,13 @@ button / Cmd-Q) or press Ctrl-C in the launching terminal.
 
 ### Panels
 
-- **Eye** — the live RX density eye (a phase × voltage histogram, viridis colormap). The red dashed line
-  is the CDR-recovered sampling phase; the top-left annotation gives **eye height** (at that phase),
-  **eye width** (timing margin), and the sampling point. The title shows the live MSE-SNR and SER.
+- **Eye** — the live RX density eye (a phase × voltage histogram, **Turbo** rainbow colormap by default).
+  The red dashed line is the CDR-recovered sampling phase; the top-left annotation gives **eye height**
+  (at that phase), **eye width** (timing margin), and the sampling point. The title shows the live MSE-SNR
+  and SER. **Hover** anywhere on the eye for a crosshair with a live UI / mV readout. The amplitude axis is
+  swing-tied so the eye *breathes* with loss, and expands as needed so an equalized eye is never clipped
+  top/bottom. Colormap, light/dark theme, log/linear density, amplitude axis, and **eye liveliness (avg
+  factor)** are all in the **View** menu.
 - **Histogram** — the amplitude distribution at the decision phase (the eye's vertical slice). PAM-4
   shows four lobes; NRZ shows two.
 - **Frequency cascade** — the magnitude (dB) vs `f/f_nyq` of three cumulative transfers: Channel,
@@ -107,7 +111,7 @@ button / Cmd-Q) or press Ctrl-C in the launching terminal.
 | Control | What it does |
 |---|---|
 | **Start / Stop** | Run / pause the transient (Monte-Carlo) engine. |
-| **Auto-EQ** | One-click closed-form MMSE: co-optimizes TX FFE → RX FFE → DFE. |
+| **Auto-EQ** | One-click closed-form MMSE: co-optimizes CTLE peaking → TX FFE → RX FFE → DFE. |
 | **EQ** checkboxes | Per-stage *true bypass*: CTLE · TX-FFE · TX-drv · RX-FFE · DFE. |
 | **Detector** combo | Receiver architecture: **Slicer** / **DFE** / **MLSD**. |
 | **Detector…** | Opens the detector settings (MLSD trellis memory `L`). |
@@ -132,10 +136,15 @@ button / Cmd-Q) or press Ctrl-C in the launching terminal.
 
 ### 5.1 Open a closed eye with Auto-EQ
 
-Start on a loss-limited reach (the default VSR, or pick MR/LR). The raw eye is closed (SER ≈ 0.5). Click
-**Auto-EQ**: EyeQ solves the MMSE TX FFE, RX FFE, and DFE taps, sweeping the TX/RX split and keeping the
-best analytic post-DFE SNR. Watch the cascade gain a high-frequency boost (the equalization), the SBR
-cursors tighten, and the eye open. The control sliders update to the solved tap values.
+Start on a loss-limited reach (the default VSR, or pick MR/LR/LR-noise). The raw eye is closed
+(SER ≈ 0.5). Click **Auto-EQ**: EyeQ sweeps the CTLE peaking level × TX/RX split, solving the MMSE RX FFE
+and DFE taps for each, and keeps the best analytic post-DFE SNR. The CTLE's analogue peaking does the
+bulk of the high-loss equalization *before* the noise-amplifying RX FFE — which is what lets the hardest
+reaches (LR, 28 dB) open under noise. Watch the cascade gain a high-frequency boost, the SBR cursors
+tighten, and the eye open. The control sliders update to the solved CTLE/tap values.
+
+The RX FFE and DFE are tap-adapted (Auto-EQ / LMS), so there are no manual per-tap sliders — set the
+number of taps and let Auto-EQ (or the DFE `adapt` toggle) solve them, matching how a real RX adapts.
 
 ### 5.2 Isolate an equalizer stage
 
@@ -311,12 +320,18 @@ flag set. Re-run via `./run_dashboard.sh` (it clears the flag automatically), or
 **The dashboard launches but the eye is empty.** Click **Start** to run the transient engine; the density
 eye accumulates over a few batches.
 
+**The eye looks too static / too noisy.** The **View → Eye liveliness (avg factor)** control sets how many
+batches the eye averages: a low factor gives a live, shimmering eye that snaps to tap changes; a high
+factor gives a smooth, persistent eye. (Tap and detector edits also reset the accumulation so the change
+shows at once.)
+
 **The eye looks stuck at a weird zoom.** Double-click it (or right-click → *Reset view*) to fit it to its
 data-driven extents.
 
-**Auto-EQ didn't fully open the eye.** On the hardest reach (LR, 28 dB) with significant noise the link
-may be margin-limited; increase the DFE tap count (`dfe → n_taps`) or reduce `noise → sigma_mvrms`, then
-Auto-EQ again. FEC may still carry it — enable KP4 and check the post-FEC BER.
+**Auto-EQ didn't fully open the eye.** Auto-EQ now peaks the CTLE automatically (toward SOTA boost on the
+hardest reaches), but on LR (28 dB) with significant noise the link can still be margin-limited; increase
+the DFE tap count (`dfe → n_taps`) or reduce `noise → sigma_mvrms`, then Auto-EQ again. FEC may still
+carry it — enable KP4 and check the post-FEC BER.
 
 **"DFE" and "Slicer" detector modes show the same BER.** Expected for the *analytic* BER: it reflects the
 linear-equalized eye and does not (yet) model DFE postcursor cancellation analytically (that shows in the

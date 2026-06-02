@@ -29,16 +29,31 @@ import pyqtgraph as pg
 import pyqtgraph.exporters  # noqa: F401 — registers the exporters used below
 from PySide6 import QtCore, QtWidgets
 
+from . import theme
 
-def _lut(name: str = "viridis"):
-    try:
-        return pg.colormap.get(name).getLookupTable(nPts=256)
-    except Exception:  # pragma: no cover - colormap name fallback
-        return pg.colormap.get("CET-L9").getLookupTable(nPts=256)
+_HEATMAP_BG = "#000000"   # eye/histogram density panels stay dark regardless of app theme
 
 
 def _db(h: np.ndarray) -> np.ndarray:
     return 20.0 * np.log10(np.maximum(np.abs(h), 1e-6))
+
+
+def _theme_line_plot(plot, name: str) -> None:
+    """Apply a dark/light theme to a line plot (background + axis + grid)."""
+    t = theme.THEMES.get(name, theme.THEMES["dark"])
+    plot.setBackground(t["plot_bg"])
+    pen = pg.mkPen(t["axis"])
+    for ax in ("left", "bottom"):
+        plot.getAxis(ax).setPen(pen)
+        plot.getAxis(ax).setTextPen(pen)
+
+
+def _dark_axes(plot) -> None:
+    """Light axis pens for the always-dark heatmap panels (eye / histogram)."""
+    pen = pg.mkPen("#b0b0b0")
+    for ax in ("left", "bottom"):
+        plot.getAxis(ax).setPen(pen)
+        plot.getAxis(ax).setTextPen(pen)
 
 
 # --------------------------------------------------------------------------- #
@@ -126,16 +141,28 @@ class InteractivePlot:
 # eye
 # --------------------------------------------------------------------------- #
 class EyePlot(InteractivePlot, pg.PlotWidget):
+    """RX density eye, centered on the sampling instant (0 UI), spanning ±1 UI.
+
+    The eye/histogram density panels keep a dark background regardless of the app
+    theme. The amplitude axis is fixed (±full-scale) by default so the eye visibly
+    breathes with swing/loss; ``set_amp_scale`` toggles auto-fit. The colormap and
+    linear/log density scale are configurable.
+    """
+
     def __init__(self):
         super().__init__()
+        self.setBackground(_HEATMAP_BG)
         self.setLabel("left", "Amplitude", units="V")
         self.setLabel("bottom", "UI")
         self.showGrid(x=False, y=False)
+        _dark_axes(self)
         self.img = pg.ImageItem()
-        self.img.setLookupTable(_lut())
+        self._colormap = "turbo"
+        self._density_scale = "log"
+        self.img.setLookupTable(theme.eye_lut(self._colormap))
         self.addItem(self.img)
-        self.setXRange(-0.5, 1.5, padding=0)
-        # marker at the (CDR-recovered or static) decision sampling phase
+        self.setXRange(-1.0, 1.0, padding=0)
+        # marker at the (now centered) decision sampling phase
         self.sample_line = pg.InfiniteLine(pos=0.0, angle=90,
                                            pen=pg.mkPen("#ff5050", style=QtCore.Qt.DashLine))
         self.addItem(self.sample_line)
@@ -149,8 +176,23 @@ class EyePlot(InteractivePlot, pg.PlotWidget):
         self.addItem(self.annot)
         self.getViewBox().sigRangeChanged.connect(self._reposition_annot)
 
+        # Hover crosshair + live UI/mV readout — drag the mouse over the eye to
+        # probe any point (the interactivity the static density panel was missing).
+        cross_pen = pg.mkPen("#7fd4cf", width=1, style=QtCore.Qt.DotLine)
+        self.cross_v = pg.InfiniteLine(angle=90, movable=False, pen=cross_pen)
+        self.cross_h = pg.InfiniteLine(angle=0, movable=False, pen=cross_pen)
+        self.cursor_label = pg.TextItem(anchor=(0, 1), color=(220, 240, 240),
+                                        fill=pg.mkBrush(0, 0, 0, 150))
+        self.cursor_label.setZValue(101)
+        for it in (self.cross_v, self.cross_h, self.cursor_label):
+            it.setVisible(False)
+            self.addItem(it)
+        self.scene().sigMouseMoved.connect(self._on_mouse_moved)
+
         self._last = None           # last DensitySnapshot (for CSV + annotation)
-        self._last_levels = None    # (v0, v1) for the reset extents
+        self._last_levels = None    # (v0, v1) data extent for auto-fit
+        self._amp_mode = "fixed"    # fixed (±full_scale) | auto
+        self._full_scale = None     # ±full_scale [V] (set from swing by the controller)
         self._eye_width_ui = None   # set from the statistical BER (LTI cadence)
         self._target_ber = None
         self._detector_note = ""    # e.g. MLSD: eye opening is not the BER predictor
@@ -160,19 +202,61 @@ class EyePlot(InteractivePlot, pg.PlotWidget):
         self._detector_note = text or ""
         self._refresh_annot()
 
+    # -- view settings --------------------------------------------------------
+    def set_colormap(self, name: str) -> None:
+        self._colormap = name
+        self.img.setLookupTable(theme.eye_lut(name))
+
+    def set_density_scale(self, scale: str) -> None:
+        self._density_scale = scale
+        if self._last is not None:
+            self.update_eye(self._last)
+
+    def set_amp_scale(self, mode: str, full_scale_v: float | None) -> None:
+        self._amp_mode = mode
+        if full_scale_v is not None:
+            self._full_scale = float(full_scale_v)
+        self._apply_amp()
+
+    def _apply_amp(self) -> None:
+        if self._amp_mode == "fixed" and self._full_scale:
+            # Frame to ±full-scale (swing-tied, so the eye breathes with loss) but
+            # never below the actual data extent — RX-FFE overshoot can push the
+            # received eye past the launch swing, and it must not clip top/bottom.
+            fs = self._full_scale
+            if self._last_levels is not None:
+                fs = max(fs, abs(self._last_levels[0]), abs(self._last_levels[1]))
+            self.setYRange(-fs, fs, padding=0)
+        elif self._last_levels is not None:
+            self.setYRange(self._last_levels[0], self._last_levels[1], padding=0.05)
+        else:
+            self.getViewBox().enableAutoRange(axis="y")
+
     def update_eye(self, snap) -> None:
         self._last = snap
         img = snap.image  # [phase, voltage]
-        two = np.vstack([img, img])  # tile two UI along the phase axis
-        hi = float(two.max()) or 1.0
-        self.img.setImage(two, autoLevels=False, levels=(0.0, hi))
+        sps = img.shape[0]
+        # Roll so the CDR-recovered sampling instant lands on the tile boundary,
+        # then the two tiled UIs frame the central eye opening at 0 (crossings ±0.5,
+        # adjacent openings ±1). Pure plotting — the underlying density is untouched.
+        j = int(round(snap.stats.get("recovered_phase_ui", 0.0) * sps + sps // 2)) % sps
+        two = np.vstack([np.roll(img, -j, axis=0)] * 2)
+        if self._density_scale == "log":
+            floor = max(float(two.max()) * 1e-6, 1e-12)
+            disp = np.log10(np.maximum(two, floor))
+            levels = (float(np.log10(floor)), float(disp.max()) or 0.0)
+        else:
+            disp = two
+            levels = (0.0, float(two.max()) or 1.0)
+        self.img.setImage(disp, autoLevels=False, levels=levels)
         v0, v1 = snap.levels
         self._last_levels = (v0, v1)
-        self.img.setRect(QtCore.QRectF(-0.5, v0, 2.0, v1 - v0))
+        self.img.setRect(QtCore.QRectF(-1.0, v0, 2.0, v1 - v0))
         st = snap.stats
-        self.sample_line.setPos(st.get("recovered_phase_ui", 0.0))
+        self.sample_line.setPos(0.0)
         self.setTitle(f"MSE SNR = {st.get('mse_snr_db', 0):.1f} dB    "
                       f"SER = {st.get('ser', 0):.1e}")
+        self._apply_amp()
         self._refresh_annot()
 
     def set_metrics(self, eye_width_ui: float, target_ber: float) -> None:
@@ -202,12 +286,25 @@ class EyePlot(InteractivePlot, pg.PlotWidget):
         (x0, _x1), (_y0, y1) = self.getViewBox().viewRange()
         self.annot.setPos(x0, y1)  # top-left corner of the current view
 
+    def _on_mouse_moved(self, pos) -> None:
+        """Track the mouse: position the crosshair + readout, hide it off-plot."""
+        vb = self.getViewBox()
+        if not vb.sceneBoundingRect().contains(pos):
+            for it in (self.cross_v, self.cross_h, self.cursor_label):
+                it.setVisible(False)
+            return
+        pt = vb.mapSceneToView(pos)
+        x, y = float(pt.x()), float(pt.y())
+        self.cross_v.setPos(x)
+        self.cross_h.setPos(y)
+        self.cursor_label.setText(f"{x:+.3f} UI\n{y * 1e3:+.0f} mV")
+        self.cursor_label.setPos(x, y)
+        for it in (self.cross_v, self.cross_h, self.cursor_label):
+            it.setVisible(True)
+
     def _default_ranges(self) -> None:
-        self.setXRange(-0.5, 1.5, padding=0)
-        if self._last_levels is not None:
-            self.setYRange(self._last_levels[0], self._last_levels[1], padding=0.05)
-        else:
-            self.getViewBox().enableAutoRange(axis="y")
+        self.setXRange(-1.0, 1.0, padding=0)
+        self._apply_amp()
 
     def _csv_columns(self):
         if self._last is None:
@@ -237,6 +334,9 @@ class CascadePlot(InteractivePlot, pg.PlotWidget):
         self._last = None
         self._install_interactive("cascade")
 
+    def apply_theme(self, name: str) -> None:
+        _theme_line_plot(self, name)
+
     def update_cascade(self, casc) -> None:
         x = casc.f_over_fnyq
         m = x > 0
@@ -264,22 +364,94 @@ class CascadePlot(InteractivePlot, pg.PlotWidget):
 # single-bit / pulse response
 # --------------------------------------------------------------------------- #
 class SbrPlot(InteractivePlot, pg.PlotWidget):
+    """Single-bit (pulse) response with the cursors drawn as emphasized stems:
+    red vertical stems from baseline to each sampled cursor, a distinct (larger,
+    bright) main-cursor marker, and h-1/h0/h+1 labels on the central cursors."""
+
+    _STEM = "#d6453c"
+    _MAIN = "#ffd24d"
+
     def __init__(self):
         super().__init__()
         self.setLabel("left", "Voltage", units="V")
         self.setLabel("bottom", "Time", units="UI")
-        self.curve = self.plot(pen=pg.mkPen("#d6453c", width=2))
-        self.cursors = pg.ScatterPlotItem(size=6, brush=pg.mkBrush("#d6453c"))
-        self.addItem(self.cursors)
+        self.curve = self.plot(pen=pg.mkPen(self._STEM, width=2))   # continuous pulse
+        self.stems = pg.PlotCurveItem(pen=pg.mkPen(self._STEM, width=2),
+                                      connect="pairs")             # vertical cursor stems
+        self.markers = pg.ScatterPlotItem()
+        self.baseline = pg.InfiniteLine(pos=0.0, angle=0, pen=pg.mkPen("#666", width=1))
+        self.addItem(self.baseline)
+        self.addItem(self.stems)
+        self.addItem(self.markers)
+        self._labels: list[pg.TextItem] = []
+        self._fg = "#e0e0e0"
         self._last = None
+        self._xr = None             # explicit data-driven ranges (see update_sbr)
+        self._yr = None
         self._install_interactive("sbr")
+
+    def apply_theme(self, name: str) -> None:
+        _theme_line_plot(self, name)
+        self._fg = theme.THEMES.get(name, theme.THEMES["dark"])["text"]
+        for lbl in self._labels:
+            lbl.setColor(self._fg)
 
     def update_sbr(self, sbr) -> None:
         m = (sbr.t_ui > -3) & (sbr.t_ui < sbr.cursor_k.max() + 3)
         self.curve.setData(sbr.t_ui[m], sbr.sbr[m])
-        self.cursors.setData(sbr.cursor_k.astype(float), sbr.cursors)
+
+        ks = sbr.cursor_k.astype(float)
+        ys = np.asarray(sbr.cursors, float)
+        # NaN-separated point pairs -> disconnected vertical stems (baseline -> sample)
+        sx = np.empty(ks.size * 3); sy = np.empty(ks.size * 3)
+        sx[0::3] = ks; sx[1::3] = ks; sx[2::3] = np.nan
+        sy[0::3] = 0.0; sy[1::3] = ys; sy[2::3] = np.nan
+        self.stems.setData(sx, sy)
+
+        spots = [{"pos": (k, y),
+                  "size": 13 if k == 0 else 7,
+                  "brush": pg.mkBrush(self._MAIN if k == 0 else self._STEM),
+                  "pen": pg.mkPen("#000000")}
+                 for k, y in zip(ks, ys)]
+        self.markers.setData(spots)
+
+        # labels on the central cursors (h-1, h0, h+1)
+        for lbl in self._labels:
+            self.removeItem(lbl)
+        self._labels = []
+        for k, y in zip(ks, ys):
+            if abs(k) <= 1:
+                name = "h0" if k == 0 else f"h{int(k):+d}"
+                lbl = pg.TextItem(name, color=self._fg,
+                                  anchor=(0.5, 1.2 if y >= 0 else -0.2))
+                lbl.setPos(k, y)
+                self.addItem(lbl)
+                self._labels.append(lbl)
+
         self.setTitle("Pulse response (SBR)")
+
+        # Explicit, data-driven ranges. The SBR must never rely on pyqtgraph's
+        # autorange alone: the NaN-separated stems can make an item report
+        # degenerate/NaN bounds, which sticks the view at a ~1e-306 scale (the data
+        # then renders off-screen). Framing to the pulse extents every update is robust.
+        t = sbr.t_ui[m]
+        ys = np.concatenate([sbr.sbr[m], np.asarray(sbr.cursors, float)])
+        ymax = float(max(np.max(ys), 0.0))
+        ymin = float(min(np.min(ys), 0.0))
+        span = (ymax - ymin) or abs(ymax) or 1e-3
+        self._yr = (ymin - 0.12 * span, ymax + 0.12 * span)
+        self._xr = (float(t[0]), float(t[-1])) if t.size else None
+        self._apply_ranges()
         self._last = (sbr.t_ui[m], sbr.sbr[m])
+
+    def _apply_ranges(self) -> None:
+        if self._yr is not None:
+            self.setYRange(*self._yr, padding=0)
+        if self._xr is not None:
+            self.setXRange(*self._xr, padding=0.02)
+
+    def _default_ranges(self) -> None:
+        self._apply_ranges()
 
     def _csv_columns(self):
         if self._last is None:
@@ -292,22 +464,55 @@ class SbrPlot(InteractivePlot, pg.PlotWidget):
 # amplitude histogram (bathtub now lives in its own window)
 # --------------------------------------------------------------------------- #
 class HistPlot(InteractivePlot, pg.PlotWidget):
-    """Amplitude histogram at the decision phase (vertical voltage axis)."""
+    """Amplitude histogram at the sampling instant (shares the eye's amplitude axis).
+
+    Part of the dark "heatmap group": dark background, warm-themed curve. Slices the
+    density at the CDR-recovered sampling column so it matches the centered eye.
+    """
 
     def __init__(self):
         super().__init__()
+        self.setBackground(_HEATMAP_BG)
         self.setLabel("bottom", "Probability")
         self.setLabel("left", "Amplitude", units="V")
-        self.curve = self.plot(pen=pg.mkPen("#3d7de8", width=1),
-                               fillLevel=0, brush=pg.mkBrush(61, 125, 232, 90))
+        _dark_axes(self)
+        self.curve = self.plot(pen=pg.mkPen("#e8a33d", width=1),
+                               fillLevel=0, brush=pg.mkBrush(232, 163, 61, 90))
         self._last = None
+        self._amp_mode = "fixed"
+        self._full_scale = None
+        self._v_range = None
         self._install_interactive("histogram")
 
+    def set_amp_scale(self, mode: str, full_scale_v: float | None) -> None:
+        self._amp_mode = mode
+        if full_scale_v is not None:
+            self._full_scale = float(full_scale_v)
+        self._apply_amp()
+
+    def _apply_amp(self) -> None:
+        if self._amp_mode == "fixed" and self._full_scale:
+            fs = self._full_scale  # contain the data even when EQ overshoot exceeds full-scale
+            if self._v_range is not None:
+                fs = max(fs, abs(self._v_range[0]), abs(self._v_range[1]))
+            self.setYRange(-fs, fs, padding=0)
+        elif self._v_range is not None:
+            self.setYRange(self._v_range[0], self._v_range[1], padding=0.05)
+        else:
+            self.getViewBox().enableAutoRange(axis="y")
+
     def update_hist(self, snap) -> None:
-        ci = int(np.argmin(np.abs(snap.t_ui)))
+        sps = snap.image.shape[0]
+        ci = int(round(snap.stats.get("recovered_phase_ui", 0.0) * sps + sps // 2)) % sps
         prob = snap.image[ci]
         self.curve.setData(prob, snap.v)
         self._last = (snap.v, prob)
+        self._v_range = (float(snap.v[0]), float(snap.v[-1]))
+        self._apply_amp()
+
+    def _default_ranges(self) -> None:
+        self.getViewBox().enableAutoRange(axis="x")
+        self._apply_amp()
 
     def _csv_columns(self):
         if self._last is None:
@@ -361,6 +566,9 @@ class BathtubPlot(InteractivePlot, pg.PlotWidget):
         self._post_target.hide()
         self._last = None
         self._install_interactive(f"bathtub_{orient}")
+
+    def apply_theme(self, name: str) -> None:
+        _theme_line_plot(self, name)
 
     def update_bathtub(self, ber, fec=None, detector_label=None) -> None:
         on = fec is not None and getattr(fec, "enabled", False)

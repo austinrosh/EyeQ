@@ -19,16 +19,17 @@ import os
 import sys
 from pathlib import Path
 
-from PySide6 import QtCore, QtWidgets
+from PySide6 import QtCore, QtGui, QtWidgets
 from pyqtgraph.dockarea import Dock, DockArea
 
 from ..analysis import ber as _ber
 from ..analysis import fec as _fec
 from ..analysis.optimize import optimize_link
 from ..core.schema import Kind
-from ..engines import StatisticalEngine, ThreadWorker
+from ..engines import StatisticalEngine, ThreadWorker, decay_for
 from ..io import build_pipeline, default_link_config, load, save
-from ..io.config import default_detector, default_fec
+from ..io.config import default_detector, default_fec, default_ui
+from . import theme
 from .binding import build_param_panel
 from .panels import BathtubWindow, DetectorWindow, FecWindow, ReportWindow
 from .plots import CascadePlot, EyePlot, HistPlot, SbrPlot
@@ -44,6 +45,14 @@ _EQ_TOGGLES = [
 
 _BATCH = 15_000
 
+# Fixed-amplitude headroom: frame the eye a little wider than ±swing/2 so the
+# received eye (which, on low-loss channels, peaks past the launch swing from
+# pulse overshoot) is never clipped at the top/bottom while still "breathing" with loss.
+_AMP_HEADROOM = 1.3
+
+# Eye-liveliness presets surfaced in the View menu (effective batches averaged).
+_AVG_FACTORS = [1, 2, 3, 5, 10]
+
 
 class Controller:
     """Owns the pipeline + engines + worker and routes parameter changes."""
@@ -52,13 +61,34 @@ class Controller:
         self.cfg = cfg
         self.stat = StatisticalEngine()
         self.pipe = build_pipeline(cfg)
-        self.worker = ThreadWorker(self.pipe, batch_symbols=_BATCH)
         self._running = False
+        self.worker = self._make_worker()
         self.fec_cfg = {**default_fec(), **(cfg.fec or {})}
         self.fec_result = None
         self.detector_cfg = {**default_detector(), **(cfg.detector or {})}
+        self.ui_cfg = {**default_ui(), **(cfg.ui or {})}
         self._apply_detector_arch()
         self.recompute_statistical()
+
+    def _decay(self) -> float:
+        """Eye-accumulation decay derived from the analysis ``avg_factor`` (liveliness)."""
+        return decay_for(self.cfg.analysis.get("avg_factor", 3))
+
+    def _make_worker(self) -> ThreadWorker:
+        return ThreadWorker(self.pipe, batch_symbols=_BATCH, decay=self._decay())
+
+    def set_avg_factor(self, n: int):
+        """Update the eye-averaging factor (View menu): persists + retunes the live worker."""
+        self.cfg.analysis["avg_factor"] = int(n)
+        self.worker.set_decay(self._decay())
+        self.worker.clear_accumulation()  # show the new liveliness immediately
+
+    def full_scale(self) -> float:
+        """Fixed-mode amplitude full-scale = ±swing/2 x headroom (contains the RX eye)."""
+        try:
+            return float(self.pipe.by_name("txffe").get("swing")) / 2.0 * _AMP_HEADROOM
+        except KeyError:
+            return 0.5 * _AMP_HEADROOM
 
     # -- engine state ---------------------------------------------------------
     def recompute_statistical(self):
@@ -117,7 +147,7 @@ class Controller:
 
     def _replace_worker(self):
         self.worker.stop()
-        self.worker = ThreadWorker(self.pipe, batch_symbols=_BATCH)
+        self.worker = self._make_worker()
         if self._running:
             self.worker.start()
 
@@ -139,7 +169,10 @@ class Controller:
             self.recompute_statistical()
             self.worker.mark_dirty()
             return "lti"
-        return "nonlinear"  # worker reads it next batch
+        # NONLINEAR: the worker reads the shared pipe next batch; clear the decayed
+        # eye so the change (DFE tap, CDR, adapt) is visible at once, not faded in.
+        self.worker.clear_accumulation()
+        return "nonlinear"
 
     def set_scenario(self, *, modulation=None, rate=None, reach=None) -> str:
         if modulation:
@@ -152,7 +185,7 @@ class Controller:
         self.pipe = build_pipeline(self.cfg)  # fresh blocks (EQ resets)
         self._apply_detector_arch()           # re-impose the detector's DFE state on the fresh pipe
         self.recompute_statistical()
-        self.worker = ThreadWorker(self.pipe, batch_symbols=_BATCH)
+        self.worker = self._make_worker()
         if self._running:
             self.worker.start()
         return "scenario"
@@ -161,7 +194,7 @@ class Controller:
         self.worker.stop()
         optimize_link(self.pipe)
         self.recompute_statistical()
-        self.worker = ThreadWorker(self.pipe, batch_symbols=_BATCH)
+        self.worker = self._make_worker()
         if self._running:
             self.worker.start()
 
@@ -169,6 +202,7 @@ class Controller:
         self.cfg = load(path)
         self.fec_cfg = {**default_fec(), **(self.cfg.fec or {})}
         self.detector_cfg = {**default_detector(), **(self.cfg.detector or {})}
+        self.ui_cfg = {**default_ui(), **(self.cfg.ui or {})}
         return self.set_scenario()  # _apply_detector_arch + recompute use the new cfgs
 
     def save_config(self, path):
@@ -176,6 +210,7 @@ class Controller:
             bc.params = self.pipe.by_name(_type_to_name(bc.type)).get_params()
         self.cfg.fec = dict(self.fec_cfg)
         self.cfg.detector = dict(self.detector_cfg)
+        self.cfg.ui = dict(self.ui_cfg)
         save(self.cfg, path)
 
 
@@ -223,6 +258,8 @@ class Dashboard(QtWidgets.QMainWindow):
         self._io_dir = ""
 
         self._build_toolbar()
+        self._build_view_menu()
+        self._apply_view_settings()  # theme + colormap + density scale + amp mode from cfg.ui
         self._update_static_plots()
         self._resync_panels()  # reflect values build_pipeline set (e.g. channel.reach)
 
@@ -319,10 +356,73 @@ class Dashboard(QtWidgets.QMainWindow):
         return {"slicer": "Slicer", "dfe": "DFE", "mlsd": "MLSD"}.get(
             self.ctrl.detector_cfg.get("mode", "dfe"), "DFE")
 
+    # -- View menu (theme / colormap / density scale / amplitude axis) --------
+    def _build_view_menu(self):
+        ui = self.ctrl.ui_cfg
+
+        def radio_menu(parent, title, items, current, on_select):
+            sub = parent.addMenu(title)
+            grp = QtGui.QActionGroup(self)
+            grp.setExclusive(True)
+            for label, val in items:
+                a = QtGui.QAction(label, self, checkable=True)
+                a.setChecked(current == val)
+                a.triggered.connect(lambda _checked=False, v=val: on_select(v))
+                grp.addAction(a)
+                sub.addAction(a)
+
+        def set_view(key):
+            return lambda v: self._set_view(key, v)
+
+        m = self.menuBar().addMenu("&View")
+        radio_menu(m, "Theme", [(n.capitalize(), n) for n in theme.THEME_NAMES],
+                   ui.get("theme", "dark"), set_view("theme"))
+        radio_menu(m, "Eye colormap", [(c, c) for c in theme.COLORMAPS],
+                   ui.get("eye_colormap", "turbo"), set_view("eye_colormap"))
+        radio_menu(m, "Density scale", [("Log", "log"), ("Linear", "linear")],
+                   ui.get("density_scale", "log"), set_view("density_scale"))
+        radio_menu(m, "Amplitude axis", [("Fixed (±swing/2)", "fixed"), ("Auto-fit", "auto")],
+                   ui.get("amp_mode", "fixed"), set_view("amp_mode"))
+        radio_menu(m, "Eye liveliness (avg factor)",
+                   [(f"{n}  ({'live' if n <= 2 else 'smooth' if n >= 10 else 'balanced'})", n)
+                    for n in _AVG_FACTORS],
+                   int(self.ctrl.cfg.analysis.get("avg_factor", 3)),
+                   lambda v: self.ctrl.set_avg_factor(v))
+        m.addSeparator()
+        note = QtGui.QAction("Eye/histogram stay dark (heatmaps read best on black)", self)
+        note.setEnabled(False)
+        m.addAction(note)
+
+    def _set_view(self, key, value):
+        self.ctrl.ui_cfg[key] = value
+        self._apply_view_settings()
+
+    def _apply_view_settings(self):
+        """Push the cfg.ui view settings to the app palette and the plots (live)."""
+        ui = self.ctrl.ui_cfg
+        name = ui.get("theme", "dark")
+        app = QtWidgets.QApplication.instance()
+        if app is not None:
+            theme.apply_app_palette(app, name)
+        for p in (self.cascade, self.sbr):
+            p.apply_theme(name)
+        if self.bathtub_win is not None:
+            self.bathtub_win.vert.apply_theme(name)
+            self.bathtub_win.horiz.apply_theme(name)
+        self.eye.set_colormap(ui.get("eye_colormap", "turbo"))
+        self.eye.set_density_scale(ui.get("density_scale", "log"))
+        fs = self.ctrl.full_scale()
+        self.eye.set_amp_scale(ui.get("amp_mode", "fixed"), fs)
+        self.hist.set_amp_scale(ui.get("amp_mode", "fixed"), fs)
+
     def _update_static_plots(self):
         ber = self.ctrl.ber
         self.cascade.update_cascade(self.ctrl.cascade)
         self.sbr.update_sbr(self.ctrl.sbr)
+        # keep the fixed amplitude scale in sync with the current swing (LTI changes)
+        fs = self.ctrl.full_scale()
+        self.eye.set_amp_scale(self.ctrl.ui_cfg.get("amp_mode", "fixed"), fs)
+        self.hist.set_amp_scale(self.ctrl.ui_cfg.get("amp_mode", "fixed"), fs)
         self.eye.set_metrics(ber.eye_width_ui, ber.target_ber)
         self.eye.set_detector_note(
             "MLSD active — eye opening is not the BER predictor"
@@ -367,6 +467,9 @@ class Dashboard(QtWidgets.QMainWindow):
         if self.bathtub_win is None:
             self.bathtub_win = BathtubWindow()
             self.bathtub_win.set_io_dir(self._io_dir)
+            name = self.ctrl.ui_cfg.get("theme", "dark")
+            self.bathtub_win.vert.apply_theme(name)
+            self.bathtub_win.horiz.apply_theme(name)
         self.bathtub_win.update_bathtub(self.ctrl.ber, self.ctrl.fec_result, self._detector_label())
         self.bathtub_win.show()
         self.bathtub_win.raise_()
@@ -482,6 +585,9 @@ class Dashboard(QtWidgets.QMainWindow):
             self._resync_panels()
             self._apply_fec_cfg(self.ctrl.fec_cfg)        # reflect loaded FEC settings in the UI
             self._apply_detector_cfg(self.ctrl.detector_cfg)  # and the loaded detector mode
+            self.menuBar().clear()                        # rebuild View menu to match loaded cfg.ui
+            self._build_view_menu()
+            self._apply_view_settings()
 
     def _save(self):
         default = os.path.join(self._io_dir, "link.yaml") if self._io_dir else "link.yaml"
