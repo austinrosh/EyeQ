@@ -442,8 +442,8 @@ frequencies normalized to $`f/f_\text{nyq}`$.
 |---|---|---|---|---|
 | `enabled` | off/on | on | — | LTI (hidden) |
 | `dc_gain` | −20–0 | 0 | dB | LTI |
-| `fz` | 0.1–2 | 0.5 | ×f_nyq | LTI |
-| `fp` | 0.5–3 | 1.0 | ×f_nyq | LTI |
+| `fz` | 0.05–2 | 0.5 | ×f_nyq | LTI |
+| `fp` | 0.5–4 | 1.0 | ×f_nyq | LTI |
 | `fpp` | 0.5–3 | 1.5 | ×f_nyq | LTI |
 | `zeta_pp` | 0.3–2 | 0.7 | — | LTI |
 
@@ -456,7 +456,8 @@ H_\text{ctle}(s) = \underbrace{10^{\text{dc gain}/20}}_{\text{dc}}\cdot
 with $`\omega_z = 2\pi\,\text{fz}\,f_\text{nyq}`$, $`\omega_p = 2\pi\,\text{fp}\,f_\text{nyq}`$,
 $`\omega_{pp} = 2\pi\,\text{fpp}\,f_\text{nyq}`$, and $`\zeta`$ is the `zeta_pp` parameter (quality factor
 $`Q = 1/2\zeta`$). A real zero/pole pair ($`\text{fz} < \text{fp}`$ boosts toward Nyquist) plus a resonant
-section. When `enabled = off`, $`H = 1`$ (true bypass).
+section. The widened $`f_z`$/$`f_p`$ ranges let the peaking reach SOTA levels (~20+ dB at the corners,
+toward LR's 28 dB Nyquist loss), which auto-EQ exploits (§9). When `enabled = off`, $`H = 1`$ (true bypass).
 
 ### 5.7 RX FFE (`blocks/rxffe.py`)
 
@@ -704,7 +705,9 @@ w = y\,X^\top\big(\sigma_a^2\,X X^\top + R\big)^{-1},\qquad
 ```
 
 searching the main-tap position $`i`$ (target $`y`$ has the input's own main-cursor magnitude at out-main)
-to minimize MMSE.
+to minimize MMSE. The regularizer uses the **front-end-referred** noise variance — the RX-input $`\sigma_n`$
+*after* the CTLE has shaped (and, when peaking, amplified) it (§7.4) — not the raw input $`\sigma_n`$, so the
+FFE correctly penalizes its own noise gain and stops over-equalizing on top of a peaked, noisy front end.
 
 **TX FFE MMSE** (Eqs. 2–3) — removes *pre*-cursors noise-free, normalized to preserve swing
 (post-cursors deliberately left for RX FFE/DFE):
@@ -712,6 +715,12 @@ to minimize MMSE.
 ```math
 v = g\,H^\top(H H^\top)^{-1},\qquad v \leftarrow v / \textstyle\sum|v|.
 ```
+
+**CTLE peaking** — the analogue boost that does the bulk of the high-loss equalization *before* the
+noise-amplifying RX FFE. `optimize_link()` offers a few target Nyquist-peaking levels (0 dB, plus fractions
+of the channel's Nyquist insertion loss, capped at the CTLE's achievable boost) and sets the zero/pole
+$`(f_z, f_p)`$ to hit each by bisection (peaking is monotonic in a single aggressiveness knob). The widened
+$`f_z\in[0.05,2]`$, $`f_p\in[0.5,4]`$ ranges reach SOTA peaking (~20+ dB, toward LR's 28 dB).
 
 **DFE** — taps (volts) = the first $`n_\text{dfe}`$ post-cursor amplitudes of the RX-FFE-equalized pulse.
 
@@ -722,9 +731,10 @@ v = g\,H^\top(H H^\top)^{-1},\qquad v \leftarrow v / \textstyle\sum|v|.
 {\big(\sum_\text{pre}c_k^2 + \sum_{\text{post}\ge n_\text{dfe}}c_k^2\big)\mathbb E[a^2] + \sigma_n^2}.
 ```
 
-`optimize_link()` sweeps a few TX FFE strengths (0, 1, 2 pre-cursor taps), solves RX FFE + DFE for each,
-and keeps the highest $`\text{SNR}_\text{link}`$ — so auto-EQ never makes the link worse by
-over-de-emphasizing. The TX FFE is always solved on a neutral (identity) RX FFE for idempotency. Online
+`optimize_link()` sweeps CTLE peaking levels × TX FFE strengths (0, 1, 2 pre-cursor taps), solves RX FFE +
+DFE for each, and keeps the highest $`\text{SNR}_\text{link}`$ — so auto-EQ never makes the link worse by
+over-peaking (which only amplifies noise) or over-de-emphasizing. The CTLE and TX FFE are restored to the
+winning candidate and the TX FFE is always solved on a neutral (identity) RX FFE for idempotency. Online
 LMS / sign-LMS remain available as the continuous variant in the transient kernel (§8.4).
 
 ---

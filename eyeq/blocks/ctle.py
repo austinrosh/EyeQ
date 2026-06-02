@@ -35,8 +35,10 @@ class CTLE(LTIBlock):
     PARAMS = [
         Param("enabled", 0, 0, "on", kind=Kind.LTI, choices=("off", "on"), hidden=True),
         Param("dc_gain", -20.0, 0.0, 0.0, unit="dB", kind=Kind.LTI),
-        Param("fz", 0.1, 2.0, 0.5, unit="xfnyq", kind=Kind.LTI),
-        Param("fp", 0.5, 3.0, 1.0, unit="xfnyq", kind=Kind.LTI),
+        # fz/fp ranges are wide enough to reach SOTA peaking (~20+ dB at the corners,
+        # toward LR's ~28 dB Nyquist loss): a low zero with a high pole maximizes boost.
+        Param("fz", 0.05, 2.0, 0.5, unit="xfnyq", kind=Kind.LTI),
+        Param("fp", 0.5, 4.0, 1.0, unit="xfnyq", kind=Kind.LTI),
         Param("fpp", 0.5, 3.0, 1.5, unit="xfnyq", kind=Kind.LTI),
         Param("zeta_pp", 0.3, 2.0, 0.7, kind=Kind.LTI),
     ]

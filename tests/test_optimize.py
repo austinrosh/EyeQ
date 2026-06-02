@@ -132,6 +132,28 @@ def test_tx_ffe_helps_on_reflective_channel(tmp_path):
 # --------------------------------------------------------------------------- #
 # front-end noise model: the RX FFE amplifies RX noise
 # --------------------------------------------------------------------------- #
+def test_auto_eq_engages_ctle_to_open_high_loss_eye():
+    # LR (~28 dB Nyquist loss) is the case the old RX-FFE-only auto-EQ couldn't open:
+    # it left the CTLE at its weak default and pushed the whole boost onto the noisy
+    # RX FFE, so the eye stayed shut under noise. Auto-EQ must now drive the CTLE's
+    # analogue peaking (the cheap, before-the-FFE equalization) to open it.
+    p = pipe("PAM4", "LR")
+    p.apply_params({"noise": {"sigma_mvrms": 1.0}})
+    peaking_before = p.by_name("ctle").peaking_db(p.ctx)
+    optimize_link(p)
+    peaking_after = p.by_name("ctle").peaking_db(p.ctx)
+    _, _, eye = STAT.compute(p)
+    assert peaking_after > peaking_before + 5.0   # the CTLE was actually peaked up
+    assert peaking_after > 8.0                    # to a real (>0 dB), SOTA-ish boost
+    assert eye.eye_height_v > 0.0                 # and the LR eye opens under noise
+
+    # The analogue peaking is load-bearing: flatten the CTLE (keeping the solved RX
+    # FFE/DFE) and the now-under-equalized eye collapses.
+    p.apply_params({"ctle": {"fz": 1.0, "fp": 1.0, "dc_gain": 0.0}})
+    _, _, eye_flat = STAT.compute(p)
+    assert eye_flat.eye_height_v < eye.eye_height_v
+
+
 def test_rx_ffe_amplifies_referred_noise():
     p = pipe("PAM4", "VSR")
     p.apply_params({"noise": {"sigma_mvrms": 5.0}})

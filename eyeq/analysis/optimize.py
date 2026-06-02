@@ -7,11 +7,13 @@ remaining post-cursors.
 * :func:`mmse_ffe` — MMSE FIR design with a noise-autocorrelation term and a
   main-tap-position search (Eqs. 6-7): ``w = y* X^T (sig_var * X X^T + R_nn)^-1``.
 * :func:`solve_dfe` — DFE taps = the post-cursor amplitudes to cancel (volts).
-* :func:`optimize_link` — applies RX FFE then DFE to a pipeline in place.
+* :func:`solve_tx_ffe` — TX FFE that removes pre-cursors (Eqs. 2-3).
+* :func:`optimize_link` — sweeps CTLE peaking x TX FFE strength, solving RX FFE +
+  DFE for each, and applies the best-SNR combination to a pipeline in place.
 
-The RX FFE is LTI, so setting its taps reshapes the SBR; the DFE taps are then
-read from the post-RX-FFE post-cursors. (TX FFE precursor optimization, Eqs. 2-3,
-is a follow-on.)
+The CTLE/TX FFE/RX FFE are all LTI, so setting their taps/poles reshapes the SBR;
+the DFE taps are then read from the post-front-end post-cursors. The CTLE does the
+bulk of the high-loss equalization before the noise-amplifying RX FFE.
 """
 
 from __future__ import annotations
@@ -111,11 +113,49 @@ def solve_dfe(post_cursors: NDArray, n_dfe: int) -> NDArray:
     return taps
 
 
-def _noise_var(pipe: Pipeline) -> float:
-    try:
-        return (pipe.by_name("noise").get("sigma_mvrms") * 1e-3) ** 2
-    except KeyError:
-        return 0.0
+# CTLE peaking is monotonic in a single "aggressiveness" knob alpha in [0,1]: the
+# zero sweeps from a high frequency (little boost) down toward DC while the pole
+# sweeps up, so more alpha = more Nyquist peaking. A bisection on alpha therefore
+# hits any achievable target. The endpoints stay inside the (widened) CTLE bounds.
+_FZ_HI, _FZ_LO = 2.0, 0.05
+_FP_LO, _FP_HI = 0.5, 4.0
+
+
+def _ctle_set_alpha(ctle, alpha: float) -> None:
+    a = float(np.clip(alpha, 0.0, 1.0))
+    ctle.set_params(fz=_FZ_HI - a * (_FZ_HI - _FZ_LO), fp=_FP_LO + a * (_FP_HI - _FP_LO))
+
+
+def _ctle_max_peaking(ctle, ctx) -> float:
+    _ctle_set_alpha(ctle, 1.0)
+    return float(ctle.peaking_db(ctx))
+
+
+def _ctle_set_peaking(ctle, ctx, target_db: float) -> float:
+    """Set fz/fp for ~``target_db`` Nyquist peaking by bisection; returns achieved dB."""
+    lo, hi = 0.0, 1.0
+    for _ in range(28):
+        mid = 0.5 * (lo + hi)
+        _ctle_set_alpha(ctle, mid)
+        if float(ctle.peaking_db(ctx)) < target_db:
+            lo = mid
+        else:
+            hi = mid
+    _ctle_set_alpha(ctle, 0.5 * (lo + hi))
+    return float(ctle.peaking_db(ctx))
+
+
+def _ctle_targets(stat: StatisticalEngine, pipe: Pipeline, ctle, ctx) -> list[float]:
+    """Candidate Nyquist-peaking levels: none, plus fractions of the channel loss.
+
+    The CTLE flattens the channel, so the right peaking tracks the channel's
+    Nyquist insertion loss; we offer a few levels (capped at what the CTLE can
+    deliver) and let the SNR sweep pick. 0 dB is always a candidate so a low-loss
+    link is never force-peaked into the noise."""
+    nyq_loss = max(0.0, float(stat.cascade(pipe).nyquist_loss_db))
+    pk_max = _ctle_max_peaking(ctle, ctx)
+    levels = {0.0, *(min(f * nyq_loss, pk_max) for f in (0.5, 0.8, 1.0))}
+    return sorted({round(v, 3) for v in levels if v >= 0.0})
 
 
 def _link_snr_db(stat: StatisticalEngine, pipe: Pipeline, n_dfe: int) -> float:
@@ -143,18 +183,24 @@ def optimize_link(
     n_dfe: int | None = None,
     tx_ffe: bool = True,
 ) -> EqResult:
-    """Co-optimize TX FFE -> RX FFE -> DFE and apply the taps to ``pipe`` in place.
+    """Co-optimize CTLE -> TX FFE -> RX FFE -> DFE and apply the result in place.
 
-    The TX FFE removes pre-cursors noise-free (at the cost of swing); the MMSE RX
-    FFE handles residual ISI but amplifies front-end noise; the DFE cancels the
-    remaining post-cursors. There is an optimum TX/RX split (Part II), so we sweep
-    a few TX FFE strengths, solve RX FFE + DFE for each, and keep the one with the
-    best (resolution-free analytic) post-DFE SNR — auto-EQ never makes the link
-    worse by over-de-emphasizing.
+    The CTLE flattens the channel with analogue peaking *before* the noise-amplifying
+    RX FFE (so it carries the bulk of the high-loss equalization cheaply); the TX FFE
+    removes pre-cursors noise-free (at the cost of swing); the MMSE RX FFE mops up
+    residual ISI but amplifies front-end noise; the DFE cancels the remaining
+    post-cursors. There is an optimum split (Part II), so we sweep a few CTLE peaking
+    levels x TX FFE strengths, solve RX FFE + DFE for each, and keep the combination
+    with the best resolution-free analytic post-DFE SNR — auto-EQ never makes the link
+    worse by over-peaking (which would just amplify noise) or over-de-emphasizing.
     """
     stat = StatisticalEngine()
     ctx = pipe.ctx
     tx, rx, dfe = pipe.by_name("txffe"), pipe.by_name("rxffe"), pipe.by_name("dfe")
+    try:
+        ctle = pipe.by_name("ctle")
+    except KeyError:
+        ctle = None
     n_rxffe = int(n_rxffe or ctx.default_rxffe_taps())
     n_dfe = int(ctx.default_dfe_taps() if n_dfe is None else n_dfe)
     sig_var = float(np.mean(ctx.levels**2))
@@ -174,26 +220,46 @@ def optimize_link(
     def solve_rx_dfe():
         rx.reset_taps()
         rx.set_params(n_taps=1)
+        # Front-end-referred noise: the FFE sees the RX noise *after* the CTLE has
+        # shaped (and, when peaking, amplified) it. Regularizing MMSE with this
+        # decision-point sigma — not the raw input sigma — stops the FFE from
+        # over-equalizing on top of an already-peaked, already-noisy front end.
+        nv = float(stat._amplitude_sigma(pipe)) ** 2
         w, rx_main, mmse = mmse_ffe(stat.sbr(pipe).cursors, n_rxffe,
-                                    sig_var=sig_var, noise_var=_noise_var(pipe))
+                                    sig_var=sig_var, noise_var=nv)
         rx.set_taps(w, rx_main)
         s1 = stat.sbr(pipe)
         dfe_taps = solve_dfe(s1.cursors[s1.cursor_k > 0], n_dfe)
         dfe.set_taps(dfe_taps)
         return w, rx_main, dfe_taps, mmse
 
-    candidates = [0, 1, 2] if tx_ffe else [0]
-    best = None
-    for n_tx_pre in candidates:
-        apply_tx(n_tx_pre)
-        w, rx_main, dfe_taps, mmse = solve_rx_dfe()
-        snr = _link_snr_db(stat, pipe, n_dfe)
-        cand = (snr, n_tx_pre, tx.taps().copy(), tx.main_pos(), w, rx_main, dfe_taps, mmse)
-        if best is None or snr > best[0]:
-            best = cand
+    # CTLE peaking candidates (None = leave the CTLE untouched, if there is none).
+    if ctle is not None:
+        ctle0 = {"enabled": ctle.get("enabled"), "fz": ctle.get("fz"), "fp": ctle.get("fp")}
+        ctle_targets = _ctle_targets(stat, pipe, ctle, ctx)
+    else:
+        ctle0, ctle_targets = None, [None]
 
-    _, n_tx_pre, tx_taps, tx_main, w, rx_main, dfe_taps, mmse = best
-    apply_tx(n_tx_pre)  # restore the winning TX FFE, then re-apply RX/DFE taps
+    tx_candidates = [0, 1, 2] if tx_ffe else [0]
+    best = None
+    for pk in ctle_targets:
+        ctle_state = None
+        if ctle is not None:
+            ctle.set_params(enabled="on")
+            _ctle_set_peaking(ctle, ctx, pk)
+            ctle_state = {"enabled": "on", "fz": ctle.get("fz"), "fp": ctle.get("fp")}
+        for n_tx_pre in tx_candidates:
+            apply_tx(n_tx_pre)
+            w, rx_main, dfe_taps, mmse = solve_rx_dfe()
+            snr = _link_snr_db(stat, pipe, n_dfe)
+            cand = (snr, ctle_state, n_tx_pre, w, rx_main, dfe_taps, mmse)
+            if best is None or snr > best[0]:
+                best = cand
+
+    _, ctle_state, n_tx_pre, w, rx_main, dfe_taps, mmse = best
+    if ctle is not None:
+        ctle.set_params(**(ctle_state or ctle0))  # restore the winning CTLE
+    apply_tx(n_tx_pre)  # re-solve the winning TX FFE on it, then re-apply RX/DFE taps
     rx.set_taps(w, rx_main)
     dfe.set_taps(dfe_taps)
     return EqResult(tx.taps(), tx.main_pos(), w, rx_main, dfe_taps, mmse)
