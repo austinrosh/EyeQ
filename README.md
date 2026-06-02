@@ -73,17 +73,16 @@ real silicon.
 | ![Report](docs/img/report.png) | ![FEC](docs/img/fec.png) |
 
 The NRZ image shows ~26 dB Nyquist loss vs the PAM-4 image's 16 dB on the *same* physical trace, because
-NRZ@112G has a 56 GHz Nyquist while PAM-4@112G has 28 GHz. That is "rate is metadata" in action.
+NRZ@112G has a 56 GHz Nyquist while PAM-4@112G has 28 GHz.
 
 ---
 
 ## Quick start
 
-EyeQ targets **Python 3.11**. The virtual environment lives **outside** the project directory at
-`~/eyeq-venv` (see the note below).
+EyeQ targets **Python 3.11**.
 
 ```bash
-# 1. create the environment and install (engine + sim + GUI extras)
+# 1. create a virtual environment and install (engine + sim + GUI extras)
 python3.11 -m venv ~/eyeq-venv
 ~/eyeq-venv/bin/pip install -e ".[dev,sim,gui]"
 
@@ -94,13 +93,8 @@ python3.11 -m venv ~/eyeq-venv
 ```
 
 Then in the dashboard: click **Start** to run the transient engine, then **Auto-EQ** to watch a closed
-eye snap open. Close the window (or press Ctrl+C in the terminal) to quit.
-
-> **Why is the venv outside the project?** On macOS with iCloud-synced folders (Desktop/Documents),
-> iCloud creates conflict-copies of binary packages while `pip` writes them, which breaks Qt's
-> platform-plugin loading. Keeping the venv (and ideally the whole project) out of iCloud-synced folders
-> avoids this. `run_dashboard.sh` also self-heals the macOS hidden-file flag on the Qt plugins and pins
-> the plugin path. See [docs/Getting-Started.md](docs/Getting-Started.md#installation) for details.
+eye snap open. Close the window (or press Ctrl+C in the terminal) to quit. macOS users who hit a Qt
+plugin error should see the [installation notes](docs/Getting-Started.md#2-installation).
 
 ---
 

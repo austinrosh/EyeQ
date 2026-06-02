@@ -1041,9 +1041,7 @@ underlying model doesn't produce.
 
 ### 17.1 Environment
 
-Python 3.11. The virtual environment lives **outside** the (iCloud-synced) project directory at
-`~/eyeq-venv` — iCloud creates conflict-copies of binary packages while pip writes them, which breaks
-Qt's platform-plugin loading. Recreate:
+Python 3.11. Create a virtual environment and install:
 
 ```bash
 python3.11 -m venv ~/eyeq-venv

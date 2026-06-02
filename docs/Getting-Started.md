@@ -54,21 +54,11 @@ The optional extras are:
 
 The headless engine works with just `sim`; install `gui` only if you want the dashboard.
 
-### Why the venv lives at `~/eyeq-venv` (and macOS notes)
+### macOS: Qt platform-plugin errors
 
-On macOS, if the project sits in an **iCloud-synced** folder (Desktop or Documents), iCloud creates
-conflict-copies (e.g. `libqcocoa 2.dylib`) of the compiled packages *while pip is writing them*. Qt then
-sees duplicate/garbled platform plugins and fails to start with
-`Could not find the Qt platform plugin "cocoa"`. A second, subtler failure: iCloud/Finder can set the
-macOS **hidden** flag on the plugin dylibs, which makes Qt's directory scan skip them.
-
-Two defenses, both already wired up:
-
-1. **Keep the venv (and ideally the whole project) out of iCloud-synced folders** — hence `~/eyeq-venv`.
-2. `run_dashboard.sh` **self-heals** on every launch: it clears the hidden flag
-   (`chflags -R nohidden …`) on the Qt plugins and pins `QT_QPA_PLATFORM_PLUGIN_PATH`.
-
-If you still hit a Qt plugin error, run:
+If the dashboard fails to start with `Could not find the Qt platform plugin "cocoa"`, the Qt plugin
+files have likely been marked with the macOS *hidden* flag. `run_dashboard.sh` clears it and pins the
+plugin path automatically on every launch; if you start the module directly, clear it yourself:
 
 ```bash
 chflags -R nohidden "$(~/eyeq-venv/bin/python -c 'import os,PySide6; print(os.path.dirname(PySide6.__file__))')"
@@ -314,10 +304,9 @@ not zeros. The full derivations and assumptions are in the
 
 ## 9. Troubleshooting & FAQ
 
-**`Could not find the Qt platform plugin "cocoa"` (macOS).** The Qt plugins picked up the hidden flag or
-an iCloud conflict-copy. Re-run via `./run_dashboard.sh` (it self-heals), or manually clear the flag:
+**`Could not find the Qt platform plugin "cocoa"` (macOS).** The Qt plugin files have the macOS hidden
+flag set. Re-run via `./run_dashboard.sh` (it clears the flag automatically), or do it manually:
 `chflags -R nohidden "$(~/eyeq-venv/bin/python -c 'import os,PySide6;print(os.path.dirname(PySide6.__file__))')"`.
-Keep the project out of iCloud-synced folders.
 
 **The dashboard launches but the eye is empty.** Click **Start** to run the transient engine; the density
 eye accumulates over a few batches.
