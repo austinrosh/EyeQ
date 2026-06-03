@@ -16,9 +16,11 @@ STAT = StatisticalEngine()
 # --------------------------------------------------------------------------- #
 def test_default_ui_shape():
     ui = default_ui()
-    assert set(ui) == {"theme", "eye_colormap", "density_scale", "amp_mode"}
+    assert set(ui) == {"theme", "eye_colormap", "density_scale", "amp_mode",
+                       "track_swing", "sbr_labels"}
     assert ui["theme"] == "dark" and ui["eye_colormap"] == "turbo"
     assert ui["density_scale"] == "log" and ui["amp_mode"] == "fixed"
+    assert ui["track_swing"] is True and ui["sbr_labels"] is True
 
 
 def test_decay_for_monotonic_and_clamped():
@@ -35,12 +37,13 @@ def test_decay_for_monotonic_and_clamped():
 def test_ui_config_round_trip(tmp_path):
     cfg = default_link_config()
     cfg.ui.update({"theme": "light", "eye_colormap": "magma", "amp_mode": "auto",
-                   "density_scale": "linear"})
+                   "density_scale": "linear", "track_swing": False, "sbr_labels": False})
     path = tmp_path / "c.yaml"
     save(cfg, path)
     r = load(path)
     assert r.ui == {"theme": "light", "eye_colormap": "magma",
-                    "amp_mode": "auto", "density_scale": "linear"}
+                    "amp_mode": "auto", "density_scale": "linear",
+                    "track_swing": False, "sbr_labels": False}
 
 
 def test_old_config_without_ui_loads():

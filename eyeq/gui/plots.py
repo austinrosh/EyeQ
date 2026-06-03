@@ -298,6 +298,11 @@ class EyePlot(InteractivePlot, pg.PlotWidget):
         self.cross_v.setPos(x)
         self.cross_h.setPos(y)
         self.cursor_label.setText(f"{x:+.3f} UI\n{y * 1e3:+.0f} mV")
+        # Flip the readout's anchor toward the interior near an edge so it never clips.
+        (x0, x1), (y0, y1) = vb.viewRange()
+        ax = 1.0 if x > 0.5 * (x0 + x1) else 0.0
+        ay = 0.0 if y > 0.5 * (y0 + y1) else 1.0
+        self.cursor_label.setAnchor((ax, ay))
         self.cursor_label.setPos(x, y)
         for it in (self.cross_v, self.cross_h, self.cursor_label):
             it.setVisible(True)
@@ -386,8 +391,11 @@ class SbrPlot(InteractivePlot, pg.PlotWidget):
         self._labels: list[pg.TextItem] = []
         self._fg = "#e0e0e0"
         self._last = None
+        self._sbr_obj = None        # last SbrResult, for re-applying view settings live
         self._xr = None             # explicit data-driven ranges (see update_sbr)
         self._yr = None
+        self._show_labels = True    # h-1/h0/h+1 cursor labels (View menu toggle)
+        self._scale_factor = 1.0    # >1 enlarges the y-frame (fixed-scale / no-track-swing)
         self._install_interactive("sbr")
 
     def apply_theme(self, name: str) -> None:
@@ -396,7 +404,22 @@ class SbrPlot(InteractivePlot, pg.PlotWidget):
         for lbl in self._labels:
             lbl.setColor(self._fg)
 
+    def set_show_labels(self, show: bool) -> None:
+        self._show_labels = bool(show)
+        self._reapply()
+
+    def set_scale_factor(self, factor: float) -> None:
+        """Enlarge the y-frame by ``factor`` (>1) so the pulse grows/shrinks on a
+        fixed scale; 1.0 frames tightly to the pulse (tracks swing)."""
+        self._scale_factor = max(1.0, float(factor))
+        self._reapply()
+
+    def _reapply(self) -> None:
+        if self._sbr_obj is not None:
+            self.update_sbr(self._sbr_obj)
+
     def update_sbr(self, sbr) -> None:
+        self._sbr_obj = sbr
         m = (sbr.t_ui > -3) & (sbr.t_ui < sbr.cursor_k.max() + 3)
         self.curve.setData(sbr.t_ui[m], sbr.sbr[m])
 
@@ -415,33 +438,45 @@ class SbrPlot(InteractivePlot, pg.PlotWidget):
                  for k, y in zip(ks, ys)]
         self.markers.setData(spots)
 
-        # labels on the central cursors (h-1, h0, h+1)
+        # Explicit, data-driven ranges. The SBR must never rely on pyqtgraph's
+        # autorange alone: the NaN-separated stems can make an item report
+        # degenerate/NaN bounds, which sticks the view at a ~1e-306 scale (the data
+        # then renders off-screen). Framing to the pulse extents every update is robust.
+        # The scale factor (>1) enlarges the frame so the pulse grows/shrinks on a
+        # fixed scale (no-track-swing); 1.0 frames tightly (tracks swing).
+        t = sbr.t_ui[m]
+        yall = np.concatenate([sbr.sbr[m], ys])
+        ymax = float(max(np.max(yall), 0.0))
+        ymin = float(min(np.min(yall), 0.0))
+        span = (ymax - ymin) or abs(ymax) or 1e-3
+        f = self._scale_factor
+        self._yr = (f * (ymin - 0.16 * span), f * (ymax + 0.16 * span))
+        self._xr = (float(t[0]), float(t[-1])) if t.size else None
+        self._apply_ranges()
+
+        # Cursor labels (h-1/h0/h+1) — optional, and placed below the point when it
+        # sits near the top of the frame so the main-cursor label never clips.
         for lbl in self._labels:
             self.removeItem(lbl)
         self._labels = []
-        for k, y in zip(ks, ys):
-            if abs(k) <= 1:
+        if self._show_labels:
+            frame_top = self._yr[1]
+            for k, y in zip(ks, ys):
+                if abs(k) > 1:
+                    continue
                 name = "h0" if k == 0 else f"h{int(k):+d}"
-                lbl = pg.TextItem(name, color=self._fg,
-                                  anchor=(0.5, 1.2 if y >= 0 else -0.2))
+                if y > 0.72 * frame_top:      # near the top -> label below the marker
+                    anchor = (0.5, -0.4)
+                elif y >= 0:
+                    anchor = (0.5, 1.3)       # above
+                else:
+                    anchor = (0.5, -0.3)      # below (negative dip)
+                lbl = pg.TextItem(name, color=self._fg, anchor=anchor)
                 lbl.setPos(k, y)
                 self.addItem(lbl)
                 self._labels.append(lbl)
 
         self.setTitle("Pulse response (SBR)")
-
-        # Explicit, data-driven ranges. The SBR must never rely on pyqtgraph's
-        # autorange alone: the NaN-separated stems can make an item report
-        # degenerate/NaN bounds, which sticks the view at a ~1e-306 scale (the data
-        # then renders off-screen). Framing to the pulse extents every update is robust.
-        t = sbr.t_ui[m]
-        ys = np.concatenate([sbr.sbr[m], np.asarray(sbr.cursors, float)])
-        ymax = float(max(np.max(ys), 0.0))
-        ymin = float(min(np.min(ys), 0.0))
-        span = (ymax - ymin) or abs(ymax) or 1e-3
-        self._yr = (ymin - 0.12 * span, ymax + 0.12 * span)
-        self._xr = (float(t[0]), float(t[-1])) if t.size else None
-        self._apply_ranges()
         self._last = (sbr.t_ui[m], sbr.sbr[m])
 
     def _apply_ranges(self) -> None:
@@ -574,9 +609,17 @@ class BathtubPlot(InteractivePlot, pg.PlotWidget):
         on = fec is not None and getattr(fec, "enabled", False)
         mlsd = getattr(ber, "detector", "decision") == "mlsd"
         raw_thr = float(np.log10(max(ber.target_ber, 1e-30)))
-        # raw SER arrays drive the (voltage/phase) eye-opening region regardless of FEC
+        # Center the horizontal (timing) bathtub so its *opening* sits symmetrically at 0,
+        # matching the re-centered eye. The eye is often skewed, so the opening midpoint
+        # (not the min-SER phase) is the visual center. The vertical eye is already symmetric.
+        if self.orient == "horizontal":
+            span0 = _open_span(ber.t_axis, ber.h_bathtub, raw_thr)
+            t0 = 0.5 * (span0[0] + span0[1]) if span0 else float(getattr(ber, "best_phase_ui", 0.0))
+        else:
+            t0 = 0.0
+        h_axis = ber.t_axis - t0
         raw_axis, raw_ser = ((ber.v_eye, ber.v_bathtub) if self.orient == "vertical"
-                             else (ber.t_axis, ber.h_bathtub))
+                             else (h_axis, ber.h_bathtub))
         if self.orient == "vertical":
             axis = ber.v_eye
             pre = fec.pre_v_ber if on else ber.v_bathtub
@@ -584,7 +627,7 @@ class BathtubPlot(InteractivePlot, pg.PlotWidget):
             if on:
                 self.curve_post.setData(fec.post_v_ber, axis)
         else:
-            axis = ber.t_axis
+            axis = h_axis
             pre = fec.pre_h_ber if on else ber.h_bathtub
             self.curve.setData(axis, pre)
             if on:

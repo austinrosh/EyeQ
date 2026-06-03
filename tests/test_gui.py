@@ -68,6 +68,30 @@ def test_controller_ui_defaults_and_full_scale():
     assert _AMP_HEADROOM > 1.0  # frames wider than the launch swing (no top/bottom clip)
 
 
+def test_track_swing_toggle_fixes_the_amplitude_scale():
+    from eyeq.gui.dashboard import _AMP_HEADROOM
+
+    c = Controller(default_link_config(modulation="PAM4", reach_class="VSR"))
+    swing = c.pipe.by_name("txffe").get("swing")
+    swing_max = c.pipe.by_name("txffe")._param("swing").max
+    assert swing < swing_max  # default swing leaves room to grow
+
+    # track-swing on (default): scale follows the current swing; SBR frames tightly
+    assert c.full_scale() == pytest.approx(swing / 2.0 * _AMP_HEADROOM)
+    assert c.sbr_scale_factor() == pytest.approx(1.0)
+
+    # track-swing off: scale anchors to the *max* swing (fixed), so a smaller swing
+    # renders smaller on a fixed axis; the SBR frame enlarges by swing_max/swing
+    c.ui_cfg["track_swing"] = False
+    assert c.full_scale() == pytest.approx(swing_max / 2.0 * _AMP_HEADROOM)
+    assert c.sbr_scale_factor() == pytest.approx(swing_max / swing)
+    # the fixed scale does not move when swing changes
+    fs_before = c.full_scale()
+    c.on_param("txffe", "swing", swing / 2.0)
+    assert c.full_scale() == pytest.approx(fs_before)
+    assert c.sbr_scale_factor() == pytest.approx(swing_max / (swing / 2.0))
+
+
 def test_controller_detector_owns_architecture():
     c = Controller(default_link_config(modulation="PAM4", reach_class="VSR"))
     assert c.detector_cfg["mode"] == "dfe"                       # default

@@ -30,6 +30,103 @@ from .plots import BathtubPlot
 _FMT = {m.key: m.fmt for m in report.METRICS}
 
 
+# --------------------------------------------------------------------------- #
+class DisplayPanel(QtWidgets.QWidget):
+    """Always-visible view/display settings — the in-window home for everything that
+    used to hide in the (macOS-global) View menu: theme, eye colormap, density/amplitude
+    scaling, swing tracking, SBR labels, and eye liveliness.
+
+    Emits ``on_view(key, value)`` for ui-config settings and ``on_avg(n)`` for the
+    eye-averaging factor; the dashboard routes both to the live plots/worker.
+    """
+
+    def __init__(self, ui_cfg: dict, avg_factor: int, colormaps, avg_factors,
+                 on_view, on_avg):
+        super().__init__()
+        self._on_view = on_view
+        self._on_avg = on_avg
+        self._avg_factors = list(avg_factors)
+
+        outer = QtWidgets.QVBoxLayout(self)
+        outer.setContentsMargins(6, 6, 6, 6)
+        box = QtWidgets.QGroupBox("Display")
+        form = QtWidgets.QFormLayout(box)
+        form.setContentsMargins(10, 10, 10, 8)
+        form.setSpacing(9)
+        form.setFieldGrowthPolicy(QtWidgets.QFormLayout.AllNonFixedFieldsGrow)
+
+        self.theme = self._combo([("Dark", "dark"), ("Light", "light")],
+                                 ui_cfg.get("theme", "dark"), "theme")
+        self.colormap = self._combo([(c.capitalize(), c) for c in colormaps],
+                                    ui_cfg.get("eye_colormap", "turbo"), "eye_colormap")
+        self.density = self._combo([("Log", "log"), ("Linear", "linear")],
+                                   ui_cfg.get("density_scale", "log"), "density_scale")
+        self.amp = self._combo([("Fixed", "fixed"), ("Auto-fit", "auto")],
+                               ui_cfg.get("amp_mode", "fixed"), "amp_mode")
+        self.live = self._combo([(self._live_label(n), n) for n in self._avg_factors],
+                                int(avg_factor), None)
+        self.live.currentIndexChanged.connect(
+            lambda *_: self._on_avg(int(self.live.currentData())))
+        self.track = self._check(ui_cfg.get("track_swing", True), "track_swing")
+        self.labels = self._check(ui_cfg.get("sbr_labels", True), "sbr_labels")
+
+        for label, w in (("Theme", self.theme), ("Eye colormap", self.colormap),
+                         ("Density scale", self.density), ("Amplitude axis", self.amp),
+                         ("Eye liveliness", self.live)):
+            form.addRow(label, w)
+        form.addRow(self.track)
+        form.addRow(self.labels)
+        hint = QtWidgets.QLabel("Track swing off → eye/SBR sit on a fixed scale and grow "
+                                "or shrink as the launch swing changes.")
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color:#8b949e; font-size:11px;")
+        form.addRow(hint)
+        outer.addWidget(box)
+        outer.addStretch(1)
+
+    # -- construction helpers -------------------------------------------------
+    @staticmethod
+    def _live_label(n: int) -> str:
+        tag = "live" if n <= 2 else "smooth" if n >= 10 else "balanced"
+        return f"{n}  ({tag})"
+
+    def _combo(self, items, current, key):
+        cb = QtWidgets.QComboBox()
+        for label, data in items:
+            cb.addItem(label, data)
+        i = cb.findData(current)
+        cb.setCurrentIndex(i if i >= 0 else 0)
+        if key is not None:
+            cb.currentIndexChanged.connect(
+                lambda *_a, c=cb, k=key: self._on_view(k, c.currentData()))
+        return cb
+
+    def _check(self, checked, key):
+        cb = QtWidgets.QCheckBox()
+        cb.setChecked(bool(checked))
+        cb.setText({"track_swing": "Track swing", "sbr_labels": "SBR cursor labels"}.get(key, ""))
+        cb.toggled.connect(lambda on, k=key: self._on_view(k, on))
+        return cb
+
+    # -- external sync (config load / scenario) -------------------------------
+    def sync(self, ui_cfg: dict, avg_factor: int) -> None:
+        pairs = [(self.theme, ui_cfg.get("theme", "dark")),
+                 (self.colormap, ui_cfg.get("eye_colormap", "turbo")),
+                 (self.density, ui_cfg.get("density_scale", "log")),
+                 (self.amp, ui_cfg.get("amp_mode", "fixed")),
+                 (self.live, int(avg_factor))]
+        for cb, val in pairs:
+            cb.blockSignals(True)
+            i = cb.findData(val)
+            cb.setCurrentIndex(i if i >= 0 else 0)
+            cb.blockSignals(False)
+        for chk, val in ((self.track, ui_cfg.get("track_swing", True)),
+                         (self.labels, ui_cfg.get("sbr_labels", True))):
+            chk.blockSignals(True)
+            chk.setChecked(bool(val))
+            chk.blockSignals(False)
+
+
 def _fmt_val(key: str, raw) -> str:
     if raw is None:
         return "—"

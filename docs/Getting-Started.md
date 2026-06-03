@@ -94,8 +94,11 @@ button / Cmd-Q) or press Ctrl-C in the launching terminal.
   (at that phase), **eye width** (timing margin), and the sampling point. The title shows the live MSE-SNR
   and SER. **Hover** anywhere on the eye for a crosshair with a live UI / mV readout. The amplitude axis is
   swing-tied so the eye *breathes* with loss, and expands as needed so an equalized eye is never clipped
-  top/bottom. Colormap, light/dark theme, log/linear density, amplitude axis, and **eye liveliness (avg
-  factor)** are all in the **View** menu.
+  top/bottom.
+- **Display** — the in-window settings panel: **theme** (dark/light), **eye colormap**, **density scale**
+  (log/linear), **amplitude axis** (fixed/auto), **eye liveliness** (averaging factor), **track swing**
+  (off → eye/SBR sit on a fixed scale and grow/shrink with the launch swing), and **SBR cursor labels**.
+  A **◐ Theme** button in the toolbar flips light/dark in one click.
 - **Histogram** — the amplitude distribution at the decision phase (the eye's vertical slice). PAM-4
   shows four lobes; NRZ shows two.
 - **Frequency cascade** — the magnitude (dB) vs `f/f_nyq` of three cumulative transfers: Channel,
@@ -320,7 +323,7 @@ flag set. Re-run via `./run_dashboard.sh` (it clears the flag automatically), or
 **The dashboard launches but the eye is empty.** Click **Start** to run the transient engine; the density
 eye accumulates over a few batches.
 
-**The eye looks too static / too noisy.** The **View → Eye liveliness (avg factor)** control sets how many
+**The eye looks too static / too noisy.** The **Display → Eye liveliness** control sets how many
 batches the eye averages: a low factor gives a live, shimmering eye that snaps to tap changes; a high
 factor gives a smooth, persistent eye. (Tap and detector edits also reset the accumulation so the change
 shows at once.)

@@ -102,14 +102,19 @@ def default_ui() -> dict[str, Any]:
     """Dashboard view settings (theme, eye colormap, density scale, amplitude mode).
 
     ``amp_mode`` 'fixed' frames the eye/histogram against ±swing/2 (so the eye breathes
-    with loss); 'auto' fits to the data. ``density_scale`` 'log' makes low-density tails
-    visible on the warm colormaps.
+    with loss); 'auto' fits to the data. ``track_swing`` true scales the fixed amplitude
+    axis with the launch swing (eye/SBR stay the same size); false anchors it to the
+    swing's full range so the eye/SBR visibly grow/shrink as swing changes.
+    ``sbr_labels`` toggles the h-1/h0/h+1 cursor labels. ``density_scale`` 'log' makes
+    low-density tails visible on the warm colormaps.
     """
     return {
         "theme": "dark",            # dark | light
         "eye_colormap": "turbo",    # turbo | jet | inferno | magma | plasma | hot | viridis | gray
         "density_scale": "log",     # log | linear
         "amp_mode": "fixed",        # fixed (±swing/2) | auto
+        "track_swing": True,        # scale the fixed axis with swing | anchor to swing range
+        "sbr_labels": True,         # show the SBR h-1/h0/h+1 cursor labels
     }
 
 

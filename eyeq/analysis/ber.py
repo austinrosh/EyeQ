@@ -203,7 +203,7 @@ def _vertical_bathtub(residual, v, c0, levels):
     # all eyes share the same residual + margin here, so pick the inner pair.
     i = levels.size // 2 - 1
     lo, hi = abs(c0) * levels[i], abs(c0) * levels[i + 1]
-    v_eye = np.linspace(lo, hi, 256)
+    v_eye = np.linspace(lo, hi, 512)
     ser = np.array([
         0.5 * (float(residual[v > (vt - lo)].sum()) + float(residual[v < (vt - hi)].sum()))
         for vt in v_eye

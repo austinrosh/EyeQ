@@ -19,7 +19,7 @@ import os
 import sys
 from pathlib import Path
 
-from PySide6 import QtCore, QtGui, QtWidgets
+from PySide6 import QtCore, QtWidgets
 from pyqtgraph.dockarea import Dock, DockArea
 
 from ..analysis import ber as _ber
@@ -31,7 +31,7 @@ from ..io import build_pipeline, default_link_config, load, save
 from ..io.config import default_detector, default_fec, default_ui
 from . import theme
 from .binding import build_param_panel
-from .panels import BathtubWindow, DetectorWindow, FecWindow, ReportWindow
+from .panels import BathtubWindow, DetectorWindow, DisplayPanel, FecWindow, ReportWindow
 from .plots import CascadePlot, EyePlot, HistPlot, SbrPlot
 
 # Equalizer-stage bypass toggles surfaced in the toolbar (label, block, param).
@@ -83,12 +83,34 @@ class Controller:
         self.worker.set_decay(self._decay())
         self.worker.clear_accumulation()  # show the new liveliness immediately
 
-    def full_scale(self) -> float:
-        """Fixed-mode amplitude full-scale = ±swing/2 x headroom (contains the RX eye)."""
+    def _swing(self) -> float:
         try:
-            return float(self.pipe.by_name("txffe").get("swing")) / 2.0 * _AMP_HEADROOM
+            return float(self.pipe.by_name("txffe").get("swing"))
         except KeyError:
-            return 0.5 * _AMP_HEADROOM
+            return 1.0
+
+    def _swing_max(self) -> float:
+        try:
+            return float(self.pipe.by_name("txffe")._param("swing").max)
+        except KeyError:
+            return self._swing()
+
+    def full_scale(self) -> float:
+        """Fixed-mode amplitude full-scale = ±swing/2 x headroom (contains the RX eye).
+
+        When 'track swing' is off the reference is the *maximum* swing rather than the
+        current swing, so the axis stays put and the eye visibly grows/shrinks with swing.
+        """
+        ref = self._swing() if self.ui_cfg.get("track_swing", True) else self._swing_max()
+        return ref / 2.0 * _AMP_HEADROOM
+
+    def sbr_scale_factor(self) -> float:
+        """Frame-enlargement for the SBR: 1.0 tracks swing (tight frame); >1 anchors the
+        frame to the max swing so the pulse grows/shrinks on a fixed scale."""
+        if self.ui_cfg.get("track_swing", True):
+            return 1.0
+        s = self._swing()
+        return self._swing_max() / s if s > 1e-9 else 1.0
 
     # -- engine state ---------------------------------------------------------
     def recompute_statistical(self):
@@ -106,7 +128,7 @@ class Controller:
             return _ber.assess_mlsd(self.stat, self.pipe, self.sbr, target_ber=self.target_ber,
                                     mlsd_taps=int(self.detector_cfg.get("mlsd_taps", 4)))
         return _ber.assess(self.stat, self.pipe, self.sbr,
-                           target_ber=self.target_ber, phase_points=33, v_bins=512)
+                           target_ber=self.target_ber, phase_points=65, v_bins=1024)
 
     def _apply_detector_arch(self):
         """Selector owns architecture: 'dfe' -> DFE on; 'slicer'/'mlsd' -> DFE off."""
@@ -231,6 +253,9 @@ class Dashboard(QtWidgets.QMainWindow):
         self.sbr = SbrPlot()
         self.hist = HistPlot()
         panel, self.panels = build_param_panel(self.ctrl.pipe, self._on_param)
+        self.display = DisplayPanel(
+            self.ctrl.ui_cfg, self.ctrl.cfg.analysis.get("avg_factor", 3),
+            theme.COLORMAPS, _AVG_FACTORS, on_view=self._set_view, on_avg=self._set_avg)
 
         area = DockArea()
         self.setCentralWidget(area)
@@ -238,16 +263,19 @@ class Dashboard(QtWidgets.QMainWindow):
         d_hist = Dock("Histogram", size=(150, 600))
         d_casc = Dock("Frequency cascade", size=(360, 300))
         d_sbr = Dock("Pulse response", size=(360, 300))
+        d_disp = Dock("Display", size=(330, 210))
         d_ctl = Dock("Controls", size=(330, 600))
         area.addDock(d_eye, "left")
         area.addDock(d_hist, "right", d_eye)
         area.addDock(d_casc, "right", d_hist)
         area.addDock(d_sbr, "bottom", d_casc)
-        area.addDock(d_ctl, "right", d_casc)
+        area.addDock(d_disp, "right", d_casc)
+        area.addDock(d_ctl, "bottom", d_disp)
         d_eye.addWidget(self.eye)
         d_hist.addWidget(self.hist)
         d_casc.addWidget(self.cascade)
         d_sbr.addWidget(self.sbr)
+        d_disp.addWidget(self.display)
         d_ctl.addWidget(panel)
 
         # Lazily-created side windows (bathtub curves, link report, FEC) + export dir.
@@ -258,7 +286,6 @@ class Dashboard(QtWidgets.QMainWindow):
         self._io_dir = ""
 
         self._build_toolbar()
-        self._build_view_menu()
         self._apply_view_settings()  # theme + colormap + density scale + amp mode from cfg.ui
         self._update_static_plots()
         self._resync_panels()  # reflect values build_pipeline set (e.g. channel.reach)
@@ -343,6 +370,13 @@ class Dashboard(QtWidgets.QMainWindow):
             b = QtWidgets.QPushButton(label)
             b.clicked.connect(slot)
             tb.addWidget(b)
+        tb.addSeparator()
+
+        # quick dark/light flip (full settings live in the Display panel)
+        theme_btn = QtWidgets.QPushButton("◐ Theme")
+        theme_btn.setToolTip("Toggle light / dark")
+        theme_btn.clicked.connect(self._toggle_theme)
+        tb.addWidget(theme_btn)
 
     # -- updates --------------------------------------------------------------
     def _on_param(self, block, param, value):
@@ -356,42 +390,16 @@ class Dashboard(QtWidgets.QMainWindow):
         return {"slicer": "Slicer", "dfe": "DFE", "mlsd": "MLSD"}.get(
             self.ctrl.detector_cfg.get("mode", "dfe"), "DFE")
 
-    # -- View menu (theme / colormap / density scale / amplitude axis) --------
-    def _build_view_menu(self):
-        ui = self.ctrl.ui_cfg
+    # -- Display panel callbacks (the in-window home for view settings) --------
+    def _set_avg(self, n: int):
+        """Eye-liveliness change from the Display panel."""
+        self.ctrl.set_avg_factor(int(n))
 
-        def radio_menu(parent, title, items, current, on_select):
-            sub = parent.addMenu(title)
-            grp = QtGui.QActionGroup(self)
-            grp.setExclusive(True)
-            for label, val in items:
-                a = QtGui.QAction(label, self, checkable=True)
-                a.setChecked(current == val)
-                a.triggered.connect(lambda _checked=False, v=val: on_select(v))
-                grp.addAction(a)
-                sub.addAction(a)
-
-        def set_view(key):
-            return lambda v: self._set_view(key, v)
-
-        m = self.menuBar().addMenu("&View")
-        radio_menu(m, "Theme", [(n.capitalize(), n) for n in theme.THEME_NAMES],
-                   ui.get("theme", "dark"), set_view("theme"))
-        radio_menu(m, "Eye colormap", [(c, c) for c in theme.COLORMAPS],
-                   ui.get("eye_colormap", "turbo"), set_view("eye_colormap"))
-        radio_menu(m, "Density scale", [("Log", "log"), ("Linear", "linear")],
-                   ui.get("density_scale", "log"), set_view("density_scale"))
-        radio_menu(m, "Amplitude axis", [("Fixed (±swing/2)", "fixed"), ("Auto-fit", "auto")],
-                   ui.get("amp_mode", "fixed"), set_view("amp_mode"))
-        radio_menu(m, "Eye liveliness (avg factor)",
-                   [(f"{n}  ({'live' if n <= 2 else 'smooth' if n >= 10 else 'balanced'})", n)
-                    for n in _AVG_FACTORS],
-                   int(self.ctrl.cfg.analysis.get("avg_factor", 3)),
-                   lambda v: self.ctrl.set_avg_factor(v))
-        m.addSeparator()
-        note = QtGui.QAction("Eye/histogram stay dark (heatmaps read best on black)", self)
-        note.setEnabled(False)
-        m.addAction(note)
+    def _toggle_theme(self):
+        """One-click dark/light flip from the toolbar (keeps the Display panel in sync)."""
+        new = "light" if self.ctrl.ui_cfg.get("theme", "dark") == "dark" else "dark"
+        self._set_view("theme", new)
+        self.display.sync(self.ctrl.ui_cfg, self.ctrl.cfg.analysis.get("avg_factor", 3))
 
     def _set_view(self, key, value):
         self.ctrl.ui_cfg[key] = value
@@ -414,12 +422,16 @@ class Dashboard(QtWidgets.QMainWindow):
         fs = self.ctrl.full_scale()
         self.eye.set_amp_scale(ui.get("amp_mode", "fixed"), fs)
         self.hist.set_amp_scale(ui.get("amp_mode", "fixed"), fs)
+        self.sbr.set_show_labels(ui.get("sbr_labels", True))
+        self.sbr.set_scale_factor(self.ctrl.sbr_scale_factor())
 
     def _update_static_plots(self):
         ber = self.ctrl.ber
         self.cascade.update_cascade(self.ctrl.cascade)
+        # keep the fixed amplitude scale in sync with the current swing (LTI changes);
+        # with track-swing off the SBR frame factor (swing_max/swing) also changes.
+        self.sbr.set_scale_factor(self.ctrl.sbr_scale_factor())
         self.sbr.update_sbr(self.ctrl.sbr)
-        # keep the fixed amplitude scale in sync with the current swing (LTI changes)
         fs = self.ctrl.full_scale()
         self.eye.set_amp_scale(self.ctrl.ui_cfg.get("amp_mode", "fixed"), fs)
         self.hist.set_amp_scale(self.ctrl.ui_cfg.get("amp_mode", "fixed"), fs)
@@ -585,8 +597,8 @@ class Dashboard(QtWidgets.QMainWindow):
             self._resync_panels()
             self._apply_fec_cfg(self.ctrl.fec_cfg)        # reflect loaded FEC settings in the UI
             self._apply_detector_cfg(self.ctrl.detector_cfg)  # and the loaded detector mode
-            self.menuBar().clear()                        # rebuild View menu to match loaded cfg.ui
-            self._build_view_menu()
+            self.display.sync(self.ctrl.ui_cfg,           # reflect loaded cfg.ui in the Display panel
+                              self.ctrl.cfg.analysis.get("avg_factor", 3))
             self._apply_view_settings()
 
     def _save(self):
