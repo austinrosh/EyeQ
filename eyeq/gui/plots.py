@@ -27,11 +27,11 @@ from datetime import datetime
 import numpy as np
 import pyqtgraph as pg
 import pyqtgraph.exporters  # noqa: F401 — registers the exporters used below
-from PySide6 import QtCore, QtWidgets
+from PySide6 import QtCore, QtGui, QtWidgets
 
 from . import theme
 
-_HEATMAP_BG = "#000000"   # eye/histogram density panels stay dark regardless of app theme
+_HEATMAP_BG = "#000000"   # eye/histogram default background before the first theme is applied
 
 
 def _db(h: np.ndarray) -> np.ndarray:
@@ -48,8 +48,21 @@ def _theme_line_plot(plot, name: str) -> None:
         plot.getAxis(ax).setTextPen(pen)
 
 
+def _theme_heatmap(plot, name: str) -> dict:
+    """Theme an eye/histogram density panel: the background + axis pens follow the
+    theme (dark bg + light axes in dark mode, light bg + dark axes in light mode).
+    Returns the theme dict so callers can colour annotations to match."""
+    t = theme.THEMES.get(name, theme.THEMES["dark"])
+    plot.setBackground(t["heatmap_bg"])
+    pen = pg.mkPen(t["axis"])
+    for ax in ("left", "bottom"):
+        plot.getAxis(ax).setPen(pen)
+        plot.getAxis(ax).setTextPen(pen)
+    return t
+
+
 def _dark_axes(plot) -> None:
-    """Light axis pens for the always-dark heatmap panels (eye / histogram)."""
+    """Light axis pens for the heatmap panels' initial (dark) construction state."""
     pen = pg.mkPen("#b0b0b0")
     for ax in ("left", "bottom"):
         plot.getAxis(ax).setPen(pen)
@@ -196,6 +209,7 @@ class EyePlot(InteractivePlot, pg.PlotWidget):
         self._eye_width_ui = None   # set from the statistical BER (LTI cadence)
         self._target_ber = None
         self._detector_note = ""    # e.g. MLSD: eye opening is not the BER predictor
+        self._fg = "#e6edf3"        # title/annotation colour (themed via apply_theme)
         self._install_interactive("eye")
 
     def set_detector_note(self, text: str) -> None:
@@ -203,6 +217,22 @@ class EyePlot(InteractivePlot, pg.PlotWidget):
         self._refresh_annot()
 
     # -- view settings --------------------------------------------------------
+    def apply_theme(self, name: str) -> None:
+        """Follow the app theme: light/dark heatmap background + matching axes,
+        annotation, crosshair readout, and title colours."""
+        t = _theme_heatmap(self, name)
+        self._fg = t["text"]
+        fill = QtGui.QColor(t["heatmap_bg"])
+        fill.setAlpha(190)
+        for item in (self.annot, self.cursor_label):
+            item.setColor(t["text"])
+            item.fill = pg.mkBrush(fill)
+            item.update()
+        try:  # recolour the existing title (running eye re-sets it each frame anyway)
+            self.setTitle(self.plotItem.titleLabel.text or "", color=self._fg)
+        except Exception:
+            pass
+
     def set_colormap(self, name: str) -> None:
         self._colormap = name
         self.img.setLookupTable(theme.eye_lut(name))
@@ -255,7 +285,7 @@ class EyePlot(InteractivePlot, pg.PlotWidget):
         st = snap.stats
         self.sample_line.setPos(0.0)
         self.setTitle(f"MSE SNR = {st.get('mse_snr_db', 0):.1f} dB    "
-                      f"SER = {st.get('ser', 0):.1e}")
+                      f"SER = {st.get('ser', 0):.1e}", color=self._fg)
         self._apply_amp()
         self._refresh_annot()
 
@@ -508,7 +538,7 @@ class HistPlot(InteractivePlot, pg.PlotWidget):
     def __init__(self):
         super().__init__()
         self.setBackground(_HEATMAP_BG)
-        self.setLabel("bottom", "Probability")
+        self.setLabel("bottom", "Relative density")
         self.setLabel("left", "Amplitude", units="V")
         _dark_axes(self)
         self.curve = self.plot(pen=pg.mkPen("#e8a33d", width=1),
@@ -518,6 +548,10 @@ class HistPlot(InteractivePlot, pg.PlotWidget):
         self._full_scale = None
         self._v_range = None
         self._install_interactive("histogram")
+
+    def apply_theme(self, name: str) -> None:
+        """Follow the app theme: light/dark heatmap background + matching axes."""
+        _theme_heatmap(self, name)
 
     def set_amp_scale(self, mode: str, full_scale_v: float | None) -> None:
         self._amp_mode = mode
@@ -540,9 +574,14 @@ class HistPlot(InteractivePlot, pg.PlotWidget):
         sps = snap.image.shape[0]
         ci = int(round(snap.stats.get("recovered_phase_ui", 0.0) * sps + sps // 2)) % sps
         prob = snap.image[ci]
-        self.curve.setData(prob, snap.v)
+        # Display on a natural 0–1 scale: the per-phase density normalized to its peak
+        # (a "relative density"), instead of tiny absolute bin probabilities (~1e-3).
+        pk = float(prob.max())
+        disp = prob / pk if pk > 0 else prob
+        self.curve.setData(disp, snap.v)
         self._last = (snap.v, prob)
         self._v_range = (float(snap.v[0]), float(snap.v[-1]))
+        self.setXRange(0.0, 1.05, padding=0)
         self._apply_amp()
 
     def _default_ranges(self) -> None:
@@ -593,22 +632,36 @@ class BathtubPlot(InteractivePlot, pg.PlotWidget):
                                            pen=pg.mkPen("#e8a33d", width=1.5, style=QtCore.Qt.DashLine))
         self._post_target = pg.InfiniteLine(angle=angle,
                                             pen=pg.mkPen("#2ca02c", width=1.5, style=QtCore.Qt.DashLine))
+        # Dual-Dirac TJ(BER) markers — vertical lines at ±TJ/2 on the timing bathtub.
+        self._tj_lo = pg.InfiniteLine(angle=90, pen=pg.mkPen("#22d3ee", width=1.5,
+                                                             style=QtCore.Qt.DashLine))
+        self._tj_hi = pg.InfiniteLine(angle=90, pen=pg.mkPen("#22d3ee", width=1.5,
+                                                             style=QtCore.Qt.DashLine))
         self.addItem(self._region)
-        for it in (self._target, self._pre_thresh, self._post_target):
+        for it in (self._target, self._pre_thresh, self._post_target, self._tj_lo, self._tj_hi):
             self.addItem(it)
         self.curve_post.hide()
         self._pre_thresh.hide()
         self._post_target.hide()
+        self._tj_lo.hide()
+        self._tj_hi.hide()
         self._last = None
         self._install_interactive(f"bathtub_{orient}")
 
     def apply_theme(self, name: str) -> None:
         _theme_line_plot(self, name)
 
-    def update_bathtub(self, ber, fec=None, detector_label=None) -> None:
+    def update_bathtub(self, ber, fec=None, detector_label=None, jitter=None) -> None:
         on = fec is not None and getattr(fec, "enabled", False)
         mlsd = getattr(ber, "detector", "decision") == "mlsd"
         raw_thr = float(np.log10(max(ber.target_ber, 1e-30)))
+        # Dual-Dirac TJ(BER) markers at ±TJ/2 on the centered timing bathtub.
+        if self.orient == "horizontal" and jitter is not None and jitter.tj_ui > 0:
+            half = 0.5 * float(jitter.tj_ui)
+            self._tj_lo.setPos(-half); self._tj_hi.setPos(half)
+            self._tj_lo.show(); self._tj_hi.show()
+        else:
+            self._tj_lo.hide(); self._tj_hi.hide()
         # Center the horizontal (timing) bathtub so its *opening* sits symmetrically at 0,
         # matching the re-centered eye. The eye is often skewed, so the opening midpoint
         # (not the min-SER phase) is the visual center. The vertical eye is already symmetric.
@@ -660,7 +713,12 @@ class BathtubPlot(InteractivePlot, pg.PlotWidget):
             self.setTitle(f"Vertical bathtub — opening {ber.eye_height_v * 1e3:.1f} mV  {tag}")
         else:
             self.setLabel("left", unit)
-            self.setTitle(f"Horizontal bathtub — opening {ber.eye_width_ui:.3f} UI  {tag}")
+            extra = ""
+            if jitter is not None and jitter.tj_ui > 0:
+                extra = f"  ·  TJ {jitter.tj_ui * 1e3:.0f} mUI"
+                if jitter.loop_bw_mhz > 0:
+                    extra += f"  ·  CDR {jitter.loop_bw_mhz:.0f} MHz"
+            self.setTitle(f"Timing bathtub — opening {ber.eye_width_ui:.3f} UI{extra}  {tag}")
 
         span = _open_span(raw_axis, raw_ser, raw_thr)
         if span is not None:

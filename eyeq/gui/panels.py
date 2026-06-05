@@ -153,11 +153,11 @@ class BathtubWindow(QtWidgets.QWidget):
         lay.addWidget(self.vert, 1)
         lay.addWidget(self.horiz, 1)
 
-    def update_bathtub(self, ber, fec=None, detector_label=None) -> None:
+    def update_bathtub(self, ber, fec=None, detector_label=None, jitter=None) -> None:
         if ber is None:
             return
-        self.vert.update_bathtub(ber, fec, detector_label)
-        self.horiz.update_bathtub(ber, fec, detector_label)
+        self.vert.update_bathtub(ber, fec, detector_label, jitter)
+        self.horiz.update_bathtub(ber, fec, detector_label, jitter)
 
     def set_io_dir(self, path: str) -> None:
         self.vert.set_io_dir(path)
@@ -234,8 +234,9 @@ class ReportWindow(QtWidgets.QWidget):
         self.table.setItem(r, c, item)
 
     # -- live refresh ---------------------------------------------------------
-    def refresh(self, ber, stats: dict, pipe, fec=None, detector=None) -> None:
-        rc = report.ReportContext(ber=ber, stats=stats or {}, pipe=pipe, fec=fec, detector=detector)
+    def refresh(self, ber, stats: dict, pipe, fec=None, detector=None, jitter=None) -> None:
+        rc = report.ReportContext(ber=ber, stats=stats or {}, pipe=pipe, fec=fec,
+                                  detector=detector, jitter=jitter)
         rows = report.evaluate(rc)
         self._live_raw = {row.key: row.raw for row in rows}
         for r, row in enumerate(rows):

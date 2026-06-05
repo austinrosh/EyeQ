@@ -73,7 +73,7 @@ It supports **112 / 224 / 448 Gb/s** from one codebase and **NRZ and PAM-4** as 
 
 5. **Honest fidelity.** Every metric whose precision is bounded by the model — or not modeled at all —
    is labeled as such in the UI and the report (e.g. post-FEC BER assumes i.i.d. symbol errors; MLSD
-   uses a union bound; crosstalk/DJ/SJ are deferred). The tool never presents a textbook gain as if it
+   uses a union bound; crosstalk and the swept jitter-tolerance mask are deferred). The tool never presents a textbook gain as if it
    captured real channel behavior.
 
 ### 1.2 Theoretical basis
@@ -92,7 +92,7 @@ eyeq/
                pipeline.py (LTI/tail split + routing)   registry.py
   blocks/      source · txffe · txjitter · channel · noise · ctle · rxffe · dfe · cdr_slicer
   engines/     statistical.py   transient.py   worker.py (threaded snapshot)   _kernels.py (Numba)
-  analysis/    eye*  ber.py  snr*  jitter*  optimize.py  fec.py  mlsd.py  report.py   (*=delegating stub)
+  analysis/    eye*  ber.py  snr*  jitter.py  optimize.py  fec.py  mlsd.py  report.py   (*=delegating stub)
   io/          config.py (LinkConfig)   touchstone.py   synth_channel.py
   channel_model.py   spectral.py
   gui/         dashboard.py   binding.py   plots.py   panels.py
@@ -108,7 +108,7 @@ tests/         per-block + per-engine + golden/validation tests
 
 ```
         ┌──────────────────── LTI prefix (one concatenated transfer) ───────────────────┐
-Source → TX FFE → TX Jitter → Channel(+pkg) → Noise → CTLE → RX FFE →┊ DFE → CDR/Slicer →┊ Analysis
+Source → TX FFE → TX Jitter → Channel(+pkg) → Noise → CTLE → RX FFE → RX Jitter →┊ DFE → CDR/Slicer →┊ Analysis
         └────────────── statistical engine concatenates these ───────┘└ nonlinear tail ─┘
                                                                         (transient kernel)
 
@@ -275,7 +275,7 @@ class Block(Protocol):
 Canonical block order:
 
 ```
-source → txffe → txjitter → channel → noise → ctle → rxffe → dfe → cdr_slicer
+source → txffe → txjitter → channel → noise → ctle → rxffe → rxjitter → dfe → cdr_slicer
 ```
 
 `Pipeline.lti_prefix()` returns blocks up to the first `is_tail` block (the DFE); `nonlinear_tail()`
@@ -362,10 +362,33 @@ override `[pre, main, post]`; dragging `pre/post/swing` reverts to manual mode.
 | Param | Range | Default | Unit | Kind |
 |---|---|---|---|---|
 | `rj_mui` | 0–50 | 0 | mUI | NONLINEAR (`also_statistical`) |
+| `dcd_mui` | 0–50 | 0 | mUI | NONLINEAR (`also_statistical`) |
+| `sj_mui` | 0–100 | 0 | mUI | NONLINEAR (`also_statistical`) |
+| `sj_freq_mhz` | 0–1000 | 100 | MHz | NONLINEAR (`also_statistical`) |
 
-Random (Gaussian) jitter. RMS in seconds: $`\sigma_t = r_j\cdot 10^{-3}\cdot\text{UI}`$, where $`r_j`$ is the `rj_mui` parameter (mUI). The
-transient engine applies a per-symbol circular sample shift $`\sim \mathcal N(0, (\sigma_t f_s)^2)`$; the
-statistical engine converts it to amplitude noise via the local slope (§7.5).
+The standard random/deterministic jitter split, each converted from mUI to seconds by
+$`s = 10^{-3}\cdot\text{UI}`$:
+
+- **RJ** — random (Gaussian), specified as an RMS $`\sigma_t = r_j\,s`$.
+- **DCD** — duty-cycle distortion, a bounded 2-Dirac at $`\pm\text{dcd}/2`$ (even/odd UI offset).
+- **SJ** — sinusoidal jitter, an **arcsine** distribution of peak amplitude `sj_mui` at `sj_freq_mhz`. The
+  frequency sets the transient sinusoid rate **and** the CDR jitter-transfer scaling $`|1-H(f_{sj})|`$
+  (§5.9) — so `sj_freq_mhz` is `also_statistical` (it reshapes the eye in the CDR tracking modes).
+
+The **statistical** engine builds the combined timing-jitter PDF — Gaussian(RJ) ⊛ 2-Dirac(DCD) ⊛
+arcsine(SJ) — slope-converts it to volts at each phase, and convolves it into the eye PDF
+(`StatisticalEngine._blur_jitter`, shared by `stat_eye` and `ber.assess`; with DCD=SJ=0 it reduces to the
+RJ-only Gaussian blur). The **transient** engine sums a per-trace integer sample shift: RJ
+$`\sim\mathcal N(0,(\sigma_t f_s)^2)`$ + DCD $`\pm\tfrac12\text{dcd}\,f_s`$ by symbol parity + SJ
+$`\text{sj}\,f_s\sin(2\pi f_{sj} k T)`$.
+
+**Decomposition** (`analysis/jitter.py`): `decompose()` combines TX + RX jitter (RJ in quadrature) and
+returns RJ rms, DCD/SJ/PJ pp, an estimated **DDJ** (data-dependent jitter = worst-case ISI swing ÷ steepest
+edge slope, the horizontal analog of the peak-distortion bound), and the dual-Dirac total jitter
+$`\text{TJ(BER)} = \text{DJ}_{pp} + 2\,Q^{-1}(\text{BER}/2)\,\text{RJ}_{rms}`$ with
+$`\text{DJ}_{pp} = \text{DCD} + \text{SJ}_{pp} + \text{PJ}_{pp} + \text{DDJ}`$ (the periodic terms
+post-CDR-tracking, §5.9). The report shows RJ/DDJ/DJ/TJ and the
+measured timing margin (the bathtub eye width); the timing bathtub overlays the $`\pm\text{TJ}/2`$ markers.
 
 ### 5.4 Channel (`blocks/channel.py`, `channel_model.py`, `io/touchstone.py`, `io/synth_channel.py`)
 
@@ -504,10 +527,44 @@ The slicer samples at a phase within the UI; `cdr_mode` selects how that phase i
 | `cdr_mode` | static / bang-bang / mueller-muller | static | — | NONLINEAR |
 | `kp` | 0–0.5 | 0.05 | — | NONLINEAR |
 | `ki` | 0–0.05 | 0.001 | — | NONLINEAR |
+| `loop_bw_mhz` | 0–200 | 10 | MHz | NONLINEAR (`also_statistical`) |
 
 `static` uses `sample_phase_ui` as a fixed offset; `bang-bang` (Alexander) and `mueller-muller` recover
 the phase from data with a PI loop (`kp`/`ki`) — `sample_phase_ui` then the initial condition. Phase
 detector equations: §8.4.
+
+**CDR jitter transfer.** A recovering CDR tracks low-frequency jitter (the clock follows the data), so the
+eye-closing timing error is the input jitter shaped by the high-pass error response $`1-H(f)`$. We model a
+1st-order transfer $`H(f)=1/(1+jf/f_c)`$ with corner `loop_bw_mhz`, so
+$`|1-H(f)| = (f/f_c)/\sqrt{1+(f/f_c)^2}`$ — 0 at DC (fully tracked), $`1/\sqrt2`$ at $`f_c`$, 1 well above
+(fully eye-closing). `CDRSlicer.error_response(f)` returns this, or 1 in `static` mode / `loop_bw_mhz=0`
+(no recovered clock → no tracking → today's behavior). The statistical engine (`_jitter_params`) and the
+jitter decomposition scale every **periodic** jitter component (TX SJ at $`f_{sj}`$, RX PJ at $`f_{pj}`$)
+by $`|1-H(f)|`$ before it closes the eye; **RJ** is broadband ($`f_c\ll`$ RJ band) so $`|1-H|\approx1`$ and
+it closes fully. This is the basis of **jitter tolerance** $`\text{JTOL}(f)=\text{margin}/|1-H(f)|`$ (the
+swept mask is still deferred). The transient kp/ki loop is the time-domain realization of the same tracking.
+
+### 5.10 RX jitter (`blocks/rxjitter.py`)
+
+The recovered **sampling clock's** own timing error, uncorrelated with the data — distinct from TX/data
+jitter only through the CDR transfer above (both are high-passed by $`1-H`$; see derivation below).
+
+| Param | Range | Default | Unit | Kind |
+|---|---|---|---|---|
+| `rj_mui` | 0–50 | 0 | mUI | NONLINEAR (`also_statistical`) |
+| `pj_mui` | 0–100 | 0 | mUI | NONLINEAR (`also_statistical`) |
+| `pj_freq_mhz` | 0–1000 | 100 | MHz | NONLINEAR (`also_statistical`) |
+
+- **RJ** — oscillator/PLL random jitter, specified as the *effective post-loop* RMS; adds in **quadrature**
+  with TX RJ ($`\sigma = \sqrt{\sigma_{tx}^2+\sigma_{rx}^2}`$), fully eye-closing.
+- **PJ** — reference-spur / supply-coupled **periodic** jitter (arcsine of amplitude `pj_mui` at
+  `pj_freq_mhz`), scaled by $`|1-H(f_{pj})|`$ — tracked out below the loop bandwidth.
+
+**Why $`(1-H)`$ for both data and clock jitter.** The recovered clock phase is
+$`\varphi_c = H\varphi_d + (1-H)\varphi_n`$ (the loop low-pass-tracks the data $`\varphi_d`$, high-pass-passes
+its own VCO noise $`\varphi_n`$). The sampler timing error is then
+$`e = \varphi_d - \varphi_c = (1-H)(\varphi_d - \varphi_n)`$ — so both the data jitter and the RX clock noise
+close the eye only through their content **above** the loop bandwidth.
 
 ---
 
@@ -915,7 +972,7 @@ optimistic at low SNR; whitened-matched-filter assumption).
 ![Link performance report](img/report.png)
 
 An **extensible registry**: each metric is a `Metric(key, label, unit, definition, getter, fmt,
-model_limited, deferred)` descriptor; `evaluate(ReportContext(ber, stats, pipe, fec, detector))` turns
+model_limited, deferred)` descriptor; `evaluate(ReportContext(ber, stats, pipe, fec, detector, jitter))` turns
 the registry into display rows. Adding a metric is a one-line append — no call-site change. A getter
 returning `None` renders `—`; `deferred=True` renders `— (not modeled)`; `model_limited=True` flags
 precision-bounded rows.
@@ -938,7 +995,7 @@ precision-bounded rows.
 | MLSD margin | $`d_\text{min}/2`$ | mV | `ber.mlsd_dmin` |
 | Post-FEC BER | estimated BER after FEC (model-based) | — | `fec.post_ber` |
 | FEC scheme / coding gain / pre-FEC threshold / post-FEC target | §11 | —/dB/—/— | `fec.*` |
-| **SNDR, RLM, ERL, jitter tolerance** | compliance metrics | dB/—/dB/UI | **deferred** (`— (not modeled)`) |
+| **SNDR, RLM, ERL** | compliance metrics | dB/—/dB | **deferred** (`— (not modeled)`) |
 
 The report window supports **capture & compare** across configurations (snapshot a config, change the
 EQ/detector/FEC, see deltas) — e.g. DFE-vs-MLSD at matched settings.
@@ -958,10 +1015,12 @@ A PyQtGraph + PySide6 thin client. `dashboard.py` (Controller + Dashboard), `bin
 bimodal histogram, and ~26 dB Nyquist loss — twice the PAM-4 figure on the same trace, because NRZ@112G
 has a 56 GHz Nyquist vs PAM-4's 28 GHz.*
 
-A `DockArea` with docks: **Eye** (density `ImageItem`), **Histogram** (amplitude at the decision phase),
-**Frequency cascade**, **Pulse response (SBR)**, and **Controls** (an auto-generated slider/combo panel,
-one group per block, built from each block's `Param` schema — adding a block surfaces its controls with
-no GUI code).
+A `DockArea` with docks: **Eye** (density `ImageItem`), **Histogram** (amplitude at the decision phase,
+on a 0–1 relative-density scale), **Frequency cascade**, **Pulse response (SBR)**, **Display** (view
+settings, below), and **Controls** (an auto-generated slider/combo panel, one group per block, built from
+each block's `Param` schema — adding a block surfaces its controls with no GUI code). The whole app is
+themed (`theme.py`): a Fusion `QPalette` + an app-wide stylesheet give a flat, rounded, cyan-teal look in
+either a dark or light palette.
 
 ### 14.2 Toolbar controls
 
@@ -973,19 +1032,29 @@ no GUI code).
   modulation cap, showing ≈ $`M^L`$ states). The selector owns the receiver architecture (drives the DFE
   enable).
 - **Bathtub**, **Report**, **FEC** (master checkbox) + **FEC…** / **Detector…** settings windows.
-- **Mod** (NRZ/PAM4) and **Rate** (112/224/448) selectors; **Load/Save** config.
+- **Mod** (NRZ/PAM4) and **Rate** (112/224/448) selectors; a one-click **◐ Theme** flip; **Load/Save** config.
 
-### 14.3 Eye annotations
+### 14.3 Display panel (`panels.py:DisplayPanel`)
+
+The in-window home for view settings (persisted in `cfg.ui`): **theme** (dark/light), **eye colormap**
+(`theme.COLORMAPS` — Turbo by default, plus jet/inferno/magma/plasma/hot/viridis/gray), **density scale**
+(log/linear), **amplitude axis** (fixed/auto), **eye liveliness** (the worker's averaging factor →
+decay), **track swing** (fixed-scale vs swing-referenced framing), and **SBR cursor labels**. The
+eye/histogram backgrounds and axes follow the theme (dark on black; light on a near-white panel).
+
+### 14.4 Eye annotations & interaction
 
 The eye shows **eye height** (at the CDR-recovered phase, on the smooth accumulated image), **eye width**
 (timing margin), and the **sampling point** (the red dashed marker at the recovered phase) — units
-labeled, measurement phase stated. Under MLSD it appends a note that the eye opening is not the BER
-predictor.
+labeled, measurement phase stated. Hovering shows a **crosshair with a live UI / mV readout**. Under MLSD
+it appends a note that the eye opening is not the BER predictor.
 
-### 14.4 Side windows (`panels.py`)
+### 14.5 Side windows (`panels.py`)
 
-- **Bathtub** — vertical + horizontal bathtub plots; marks the eye opening at the target BER; overlays
-  the post-FEC curve and the pre-FEC threshold when FEC is on; titled "sequence-error model" under MLSD.
+- **Bathtub** — vertical (voltage) + horizontal (timing) bathtub plots; marks the eye opening at the
+  target BER; the timing bathtub overlays the dual-Dirac **TJ(BER) markers** and the **CDR loop bandwidth**
+  when jitter is set; overlays the post-FEC curve and pre-FEC threshold when FEC is on; titled
+  "sequence-error model" under MLSD.
 - **Report** — the metric table (definition + unit per row), with capture/compare.
 - **FEC** — scheme/n/k/m/t/target/error-model + soft-pairing and fidelity notes.
 - **Detector** — mode + trellis $`L`$ + states + fidelity note.
@@ -1019,6 +1088,7 @@ every stochastic draw.
 | `analysis` | {avg_factor, v_bins, phase_points} | engine/eye settings |
 | `fec` | {enabled, scheme, target_post_ber, error_model, burst_len_bits, interleave_depth, custom_n/k/m} | §11 |
 | `detector` | {mode, mlsd_taps} | §12 |
+| `ui` | {theme, eye_colormap, density_scale, amp_mode, track_swing, sbr_labels} | Display panel (§14.3) |
 
 `to_dict = asdict`; `from_dict` keeps only known fields, so old configs (lacking `fec`/`detector`) load
 with empty dicts → defaults. `save`/`load`/`build_pipeline`/`default_link_config` round out the IO.
@@ -1034,12 +1104,12 @@ EyeQ labels every model-bounded or unmodeled quantity. Summary:
 |---|---|---|
 | Channel (analytical) | loss budget + slope (skin/dielectric), TL phase | MR/LR reflection notches need Touchstone; analytical curves are smooth there (a fidelity *regime*, not a bug) |
 | Noise | front-end-referred Gaussian | no colored/correlated noise; crosstalk (FEXT/NEXT) deferred |
-| Jitter | RJ (Gaussian) | DJ/SJ and jitter decomposition deferred |
+| Jitter | TX (RJ/DCD/SJ) + RX clock (RJ/PJ), CDR jitter transfer (1−H), RJ/DJ/DDJ→TJ(BER) | swept jitter-tolerance mask deferred |
 | Statistical BER | linear-equalized eye, residual-tail integration to ~$`10^{-18}`$ | **DFE postcursor cancellation not in the analytic BER** (only in transient SER) |
 | Transient SER | true Monte-Carlo with DFE/CDR | floor ~$`10^{-5}`$ (run-length limited) |
 | FEC | hard-decision RS, i.i.d. symbol errors | bursty model is a coarse approximation; concatenated (224G) deferred; assumes WMF |
 | MLSD | minimum-distance union bound | optimistic at low SNR; WMF assumption; no real Viterbi over bits |
-| Compliance | — | SNDR, RLM, ERL, jitter tolerance are present as deferred report rows |
+| Compliance | — | SNDR, RLM, ERL are present as deferred report rows |
 | Package | tunable loss-at-Nyquist | package-`.s4p` import deferred |
 
 **Philosophy:** a metric is shown with its method and its limits, never as if it captured behavior the
@@ -1110,7 +1180,7 @@ print(f"MLSD BER={ml.ber:.2e}  d_min/2={ml.mlsd_dmin/2*1e3:.1f} mV")
 
 ## 18. Validation & testing
 
-The `tests/` suite (200+ tests) covers every block and engine plus golden/validation tests:
+The `tests/` suite (247 tests) covers every block and engine plus golden/validation tests:
 
 | Test area | What it checks |
 |---|---|
@@ -1126,6 +1196,7 @@ The `tests/` suite (200+ tests) covers every block and engine plus golden/valida
 | `test_bypass` | EQ-stage true-bypass equivalence; DFE zero-feedback with CDR running |
 | `test_fec` | **KP4 waterfall anchor** (threshold ≈ $`2.4\times10^{-4}`$, gain ≈ 6.9 dB); log-domain == direct binomial |
 | `test_mlsd` | **min-distance anchor** $`h=[1,0.5]\Rightarrow d^2_\text{min}=5`$ (= MFB); MLSD ≤ slicer on ISI |
+| `test_jitter` / `test_rxjitter` | DCD/SJ kernels (2-Dirac / arcsine); eye width shrinks with jitter; RJ/DJ/DDJ→TJ; **CDR tracks low-freq SJ** (error response 1/√2 at $`f_c`$); RX RJ in quadrature |
 | `test_report` | registry extensibility; deferred vs missing rendering |
 | `test_gui` | Controller logic (headless); widget tests skip without a display |
 

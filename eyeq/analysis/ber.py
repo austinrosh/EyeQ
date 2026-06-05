@@ -65,7 +65,7 @@ def assess(
     main_sel = m_range != 0  # ISI cursors (exclude the main)
 
     sigma_amp = eng._amplitude_sigma(pipe)
-    sigma_t = eng._jitter_sigma_s(pipe, ctx)
+    jit = eng._jitter_params(pipe, ctx)   # (RJ rms, DCD pp, SJ amp) in seconds
 
     # Voltage grid (exact zero at center) wide enough for the deep tails.
     v_peak = 1.2 * (float(np.sum(np.abs(sbr.cursors))) * float(np.max(np.abs(levels))) + 6 * sigma_amp)
@@ -84,11 +84,7 @@ def assess(
         c0 = float(cvals[m_range == 0][0])
         residual = eng._convolve_cursor_pdfs(cvals[main_sel], levels, v, dv)
         slope = eng._local_slope(pulse, center, ctx.dt)
-        sigma = float(np.hypot(sigma_amp, abs(slope) * sigma_t))
-        if sigma > 0:
-            residual = np.maximum(eng._gaussian_blur(residual, dv, sigma), 0.0)
-        s = residual.sum()
-        residual = residual / s if s > 0 else residual
+        residual = eng._blur_jitter(residual, dv, slope, sigma_amp, jit)
         residuals.append((c0, residual))
         sers[pi] = _symbol_error_rate(residual, v, c0, levels)
 
@@ -158,13 +154,21 @@ def assess_mlsd(
     h_bathtub = np.log10(np.maximum(sers, _FLOOR))           # log10(SER) vs phase (timing bathtub)
     eye_width_ui = _opening_width(t_axis, sers, target_ber)
 
-    # Vertical analog: BER vs available margin voltage (no decision threshold under MLSD).
-    margin = 0.5 * float(np.sqrt(max(rb.d2_min, 0.0)))       # d_min/2 — the MLSD effective half-opening
-    v_eye = np.linspace(0.0, max(1.3 * margin, 1e-6), v_bins)
+    # Vertical analog: a *symmetric* voltage bathtub centered on the decision point, so
+    # it reads like the decision-mode one. MLSD has no threshold to sweep, so model SER
+    # vs an offset v from the optimal point — the noise must bridge the remaining margin
+    # (d_min/2 - |v|), so the well bottoms at v=0 (the true sequence SER) and rises to
+    # ~0.5 at |v| = margin (the effective half-opening).
+    margin = 0.5 * float(np.sqrt(max(rb.d2_min, 0.0)))      # d_min/2 — MLSD effective half-opening
+    v_span = max(1.3 * margin, 1e-6)
+    v_eye = np.linspace(-v_span, v_span, v_bins)
+    remaining = margin - np.abs(v_eye)                      # margin still available at offset v
     if sigma > 0.0:
-        v_ser = max(rb.n_events, 1) * 0.5 * erfc(v_eye / (sigma * np.sqrt(2.0)))
+        v_ser = np.where(remaining > 0.0,
+                         np.minimum(max(rb.n_events, 1) * 0.5 * erfc(remaining / (sigma * np.sqrt(2.0))), 0.5),
+                         0.5)
     else:
-        v_ser = np.where(v_eye > 0.0, _FLOOR, 0.5)
+        v_ser = np.where(remaining > 0.0, _FLOOR, 0.5)
     v_bathtub = np.log10(np.maximum(v_ser, _FLOOR))
 
     # COM analog: the min-distance margin vs the noise amplitude at the target.

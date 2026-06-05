@@ -24,6 +24,7 @@ from pyqtgraph.dockarea import Dock, DockArea
 
 from ..analysis import ber as _ber
 from ..analysis import fec as _fec
+from ..analysis import jitter as _jitter
 from ..analysis.optimize import optimize_link
 from ..core.schema import Kind
 from ..engines import StatisticalEngine, ThreadWorker, decay_for
@@ -119,6 +120,8 @@ class Controller:
         self.target_ber = self.pipe.ctx.reach.target_ber
         self.cascade, self.sbr, self.eye = self.stat.compute(self.pipe)
         self.ber = self._assess_ber()
+        self.jitter = _jitter.decompose(self.stat, self.pipe, self.sbr, self.ber,
+                                        target_ber=self.target_ber)
         self._refresh_fec()
 
     def _assess_ber(self):
@@ -412,7 +415,7 @@ class Dashboard(QtWidgets.QMainWindow):
         app = QtWidgets.QApplication.instance()
         if app is not None:
             theme.apply_app_palette(app, name)
-        for p in (self.cascade, self.sbr):
+        for p in (self.cascade, self.sbr, self.eye, self.hist):
             p.apply_theme(name)
         if self.bathtub_win is not None:
             self.bathtub_win.vert.apply_theme(name)
@@ -440,13 +443,14 @@ class Dashboard(QtWidgets.QMainWindow):
             "MLSD active — eye opening is not the BER predictor"
             if self.ctrl.detector_cfg.get("mode") == "mlsd" else "")
         if self.bathtub_win is not None and self.bathtub_win.isVisible():
-            self.bathtub_win.update_bathtub(ber, self.ctrl.fec_result, self._detector_label())
+            self.bathtub_win.update_bathtub(ber, self.ctrl.fec_result,
+                                            self._detector_label(), self.ctrl.jitter)
 
     def _refresh_report(self):
         if self.report_win is not None and self.report_win.isVisible():
             snap = self.ctrl.latest()
             self.report_win.refresh(self.ctrl.ber, snap.stats if snap else {}, self.ctrl.pipe,
-                                    self.ctrl.fec_result, self.ctrl.detector_cfg)
+                                    self.ctrl.fec_result, self.ctrl.detector_cfg, self.ctrl.jitter)
 
     def _resync_panels(self):
         for name, panel in self.panels.items():
@@ -482,7 +486,8 @@ class Dashboard(QtWidgets.QMainWindow):
             name = self.ctrl.ui_cfg.get("theme", "dark")
             self.bathtub_win.vert.apply_theme(name)
             self.bathtub_win.horiz.apply_theme(name)
-        self.bathtub_win.update_bathtub(self.ctrl.ber, self.ctrl.fec_result, self._detector_label())
+        self.bathtub_win.update_bathtub(self.ctrl.ber, self.ctrl.fec_result,
+                                        self._detector_label(), self.ctrl.jitter)
         self.bathtub_win.show()
         self.bathtub_win.raise_()
 
@@ -517,7 +522,8 @@ class Dashboard(QtWidgets.QMainWindow):
 
     def _update_fec_views(self):
         if self.bathtub_win is not None and self.bathtub_win.isVisible():
-            self.bathtub_win.update_bathtub(self.ctrl.ber, self.ctrl.fec_result, self._detector_label())
+            self.bathtub_win.update_bathtub(self.ctrl.ber, self.ctrl.fec_result,
+                                        self._detector_label(), self.ctrl.jitter)
         self._refresh_report()
 
     # -- detector -------------------------------------------------------------

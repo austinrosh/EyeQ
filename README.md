@@ -35,8 +35,8 @@ NRZ and PAM-4), built on the modeling and optimization framework of Shakiba, Ton
 architects who want to *explore* link trade-offs rather than produce a single compliance number.
 Behavioral models are approximations, so EyeQ labels every model-bounded or unmodeled quantity directly
 in the UI and report (post-FEC BER assumes i.i.d. symbol errors; MLSD uses a minimum-distance union
-bound; crosstalk and DJ/SJ jitter are deferred) and never presents a textbook gain as if it captured
-real silicon.
+bound; crosstalk and the swept jitter-tolerance mask are deferred) and never presents a textbook gain as
+if it captured real silicon.
 
 ---
 
@@ -47,16 +47,21 @@ real silicon.
 - **Two engines on one pipeline:** a sub-millisecond statistical engine (cascade, SBR, PDA eye giving
   BER/COM/bathtubs to ~10⁻¹⁸) and a continuous Monte-Carlo transient engine (≥1.5 M UI/s, Numba kernel).
 - **Every block tunable:** TX FFE + driver, two analytical channel models plus Touchstone `.s4p` import,
-  CTLE, RX FFE, DFE, CDR (bang-bang and Mueller-Müller phase detectors), jitter, and noise, with controls
-  auto-generated from each block's parameter schema.
-- **One-click MMSE Auto-EQ** that co-optimizes the TX/RX/DFE equalization split.
+  CTLE, RX FFE, DFE, CDR (bang-bang and Mueller-Müller phase detectors), TX + RX jitter, and noise, with
+  controls auto-generated from each block's parameter schema.
+- **One-click MMSE Auto-EQ** that co-optimizes the CTLE peaking and the TX/RX/DFE equalization split.
+- **Full jitter model:** TX (RJ / DCD / SJ) and RX sampling-clock (RJ / periodic) jitter, the **CDR jitter
+  transfer** (low-frequency jitter is tracked out, only jitter above the loop bandwidth closes the eye),
+  and an RJ / DJ / DDJ → **TJ(BER)** dual-Dirac decomposition shown on a timing bathtub.
 - **Per-stage EQ bypass toggles** to isolate any equalizer's contribution.
 - **Performance assessment:** BER, COM, horizontal/vertical bathtub curves, eye margins, MSE-SNR.
 - **Forward Error Correction (FEC):** Reed-Solomon KP4 / KR4 / custom, with pre- vs post-FEC BER side by
   side and the pre-FEC threshold marked on the bathtub.
 - **MLSD / Viterbi sequence detection** as a selectable receiver mode, with a minimum-distance BER
   estimate.
-- **Extensible report panel** with capture and compare across configurations.
+- **Modern, configurable UI:** light / dark themes, selectable eye colormaps (Turbo by default), a
+  swing-tracking or fixed amplitude scale, eye liveliness, and an in-window **Display** panel — plus an
+  extensible report panel with capture/compare across configurations.
 - **Zoom / pan / one-action reset** and **PNG / CSV export** on every plot.
 - **Reproducible configs** (YAML/JSON) and a fully headless, scriptable, unit-tested engine.
 
@@ -64,16 +69,17 @@ real silicon.
 
 ## Screenshots
 
-| 112G NRZ link | Bathtub curves (with FEC overlay) |
+| 112G NRZ link (dark) | Light theme |
 |:---:|:---:|
-| ![NRZ dashboard](docs/img/dashboard_nrz.png) | ![Bathtub](docs/img/bathtub.png) |
+| ![NRZ dashboard](docs/img/dashboard_nrz.png) | ![Light theme](docs/img/dashboard_light.png) |
 
-| Link performance report | FEC settings |
+| Bathtub + timing/jitter (TJ markers) | Link performance report |
 |:---:|:---:|
-| ![Report](docs/img/report.png) | ![FEC](docs/img/fec.png) |
+| ![Bathtub](docs/img/bathtub.png) | ![Report](docs/img/report.png) |
 
-The NRZ image shows ~26 dB Nyquist loss vs the PAM-4 image's 16 dB on the *same* physical trace, because
-NRZ@112G has a 56 GHz Nyquist while PAM-4@112G has 28 GHz.
+The eye/histogram and chrome follow a light or dark theme; the timing bathtub shows the dual-Dirac TJ(BER)
+markers and the CDR loop bandwidth. The NRZ image shows ~26 dB Nyquist loss vs the PAM-4 hero image's
+16 dB on the *same* physical trace, because NRZ@112G has a 56 GHz Nyquist while PAM-4@112G has 28 GHz.
 
 ---
 
@@ -107,9 +113,11 @@ A quick orientation (full walkthrough in **[Getting Started](docs/Getting-Starte
   the per-stage transfer cascade, and the single-bit (pulse) response with cursors.
 - **Controls:** an auto-generated panel, one group per block; drag a slider and the relevant plots
   update live.
+- **Display:** an in-window panel for theme (light / dark), eye colormap, density scale, amplitude axis,
+  eye liveliness, swing tracking, and SBR cursor labels.
 - **Toolbar:** Start/Stop, Auto-EQ, per-stage **EQ bypass** checkboxes, the **Detector** selector
   (Slicer / DFE / MLSD), a **FEC** toggle, the **Bathtub** / **Report** / **FEC** / **Detector** setting
-  windows, modulation and rate selectors, and config Load/Save.
+  windows, modulation and rate selectors, a one-click **theme** flip, and config Load/Save.
 - **Right-click any plot** for zoom-reset and PNG/CSV export; **double-click** to fit-to-default.
 
 ### Headless / scripting
@@ -156,13 +164,13 @@ See `examples/run_link.py` for a runnable headless example.
 flowchart LR
   subgraph LTI["LTI prefix: one concatenated transfer (statistical engine)"]
     direction LR
-    SRC[Source] --> TXF[TX FFE] --> TXJ[TX Jitter] --> CH["Channel + package"] --> NZ[Noise] --> CT[CTLE] --> RXF[RX FFE]
+    SRC[Source] --> TXF[TX FFE] --> TXJ[TX Jitter] --> CH["Channel + package"] --> NZ[Noise] --> CT[CTLE] --> RXF[RX FFE] --> RXJ[RX Jitter]
   end
   subgraph TAIL["Nonlinear tail: transient Monte-Carlo kernel"]
     direction LR
     DFE[DFE] --> CDR["CDR / Slicer"]
   end
-  RXF --> DFE
+  RXJ --> DFE
   CDR --> DET{"Detector: Slicer, DFE, or MLSD"}
   DET --> FECN["FEC (Reed-Solomon)"]
   FECN --> OUT["Analysis: BER, COM, bathtubs, report"]
@@ -184,21 +192,22 @@ Core contracts live in `eyeq/core/` (`SimContext`, `Param`/`Kind`, `Block`, `Pip
 ## Status & roadmap
 
 **Implemented:** statistical and transient engines; both analytical channel models plus
-synthetic/measured Touchstone import; the full equalizer set; closed-form MMSE Auto-EQ; real CDR
-(bang-bang and Mueller-Müller); BER/COM/bathtubs; per-stage EQ bypass; FEC (KP4/KR4/custom); MLSD
-detection; the extensible report; and the live dashboard with export. 200+ tests pass.
+synthetic/measured Touchstone import; the full equalizer set; closed-form MMSE Auto-EQ (CTLE peaking +
+TX/RX/DFE split); real CDR (bang-bang and Mueller-Müller) with a jitter-transfer model; TX + RX jitter
+(RJ/DCD/SJ/PJ) with an RJ/DJ/DDJ→TJ(BER) decomposition; BER/COM/bathtubs; per-stage EQ bypass; FEC
+(KP4/KR4/custom); MLSD detection; the extensible report; and a modern, themeable live dashboard with
+export. 247 tests pass.
 
-**Deferred (labeled as such in the UI):** crosstalk (FEXT/NEXT), package-`.s4p` import, DJ/SJ jitter and
-decomposition, and the compliance metrics SNDR / RLM / ERL / jitter-tolerance (present as "not modeled"
-report rows). MLSD currently estimates BER via a minimum-distance union bound (no live Viterbi); the
-analytic decision-point BER reflects the linear-equalized eye (DFE cancellation appears in the transient
-SER).
+**Deferred (labeled as such in the UI):** crosstalk (FEXT/NEXT), package-`.s4p` import, the swept
+jitter-tolerance mask, and the compliance metrics SNDR / RLM / ERL (present as "not modeled" report rows).
+MLSD currently estimates BER via a minimum-distance union bound (no live Viterbi); the analytic
+decision-point BER reflects the linear-equalized eye (DFE cancellation appears in the transient SER).
 
 ---
 
 ## Validation
 
-`tests/` (200+ tests) covers every block and engine plus golden/validation tests, including the
+`tests/` (247 tests) covers every block and engine plus golden/validation tests, including the
 **keystone** check (the transient density eye converges to the statistical eye for an LTI-only link),
 the canonical **KP4 FEC waterfall** (pre-FEC threshold ≈ 2.4×10⁻⁴, ~6.9 dB coding gain), and the **MLSD
 matched-filter-bound** anchor.
@@ -217,7 +226,7 @@ Regenerate the synthetic reference channels with
 ```
 eyeq/
   core/        SimContext, parameter schema, Block protocol, Pipeline, registry
-  blocks/      source, txffe, txjitter, channel, noise, ctle, rxffe, dfe, cdr_slicer
+  blocks/      source, txffe, txjitter, channel, noise, ctle, rxffe, rxjitter, dfe, cdr_slicer
   engines/     statistical, transient, worker (threaded snapshot), _kernels (Numba)
   analysis/    ber, fec, mlsd, optimize (MMSE auto-EQ), report
   io/          config, touchstone, synth_channel

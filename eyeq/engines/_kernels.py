@@ -76,11 +76,16 @@ def dfe_eye(windows, a_norm, sym_idx, taps, levels, thr, dec_col, main_cursor,
             dk = levels[di]
             if cdr_mode == 2:  # Mueller-Muller (baud-rate), normalized to O(1)
                 e_t = (samp * d_prev - samp_prev * dk) / (main_cursor * main_cursor + 1e-30)
-            else:  # bang-bang (Alexander): edge sample vs the transition midpoint
-                ec = col - half
-                if ec < 0:
-                    ec = 0
-                e_edge = windows[k, ec] - fb
+            else:  # bang-bang (Alexander): early-edge sample vs the transition midpoint
+                # The early edge is half a UI before the data sample. When the phase
+                # is negative (col < half) it falls in the *previous* UI window — read
+                # it there (k>0 here) instead of clamping to 0, which would freeze the
+                # edge at the crossing and let the loop drift to the -half UI null.
+                ce = col - half
+                if ce >= 0:
+                    e_edge = windows[k, ce] - fb
+                else:
+                    e_edge = windows[k - 1, ce + sps] - fb
                 mid = 0.5 * (d_prev + dk) * main_cursor
                 if dk > d_prev:      # rising: edge above mid -> sampling late
                     e_t = -1.0 if e_edge > mid else 1.0

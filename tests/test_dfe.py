@@ -5,6 +5,7 @@ import time
 import numpy as np
 import pytest
 
+from eyeq.analysis.optimize import optimize_link
 from eyeq.engines import StatisticalEngine, TransientEngine
 from eyeq.io import build_pipeline, default_link_config
 
@@ -128,6 +129,24 @@ def test_cdr_recovers_optimal_phase(mode, init):
         r = TRAN.run_batch(p, n_symbols=60_000, sbr=sbr, v=eye.v, rng=rng)
     assert abs(r.recovered_phase_ui) < 0.1        # locked near the eye center
     assert r.mse_snr_db > opt - 1.5               # recovered SNR ~ the optimum
+
+
+def test_bang_bang_locks_to_eye_center_not_crossing():
+    # Regression: the bang-bang early-edge must be read from the *previous* UI window
+    # when the phase goes negative. Clamping it to column 0 froze the edge at the data
+    # crossing, removed the early-side restoring force, and the loop drifted to the
+    # -half-UI null — sampling the crossing (eye shut, SER ~ random), which also made
+    # downstream DFE/RX-FFE tweaks look dead. PAM-4 + the default gains trigger it.
+    p = pipe("PAM4", "VSR")
+    optimize_link(p)
+    _, sbr, eye = STAT.compute(p)
+    p.apply_params({"cdr_slicer": {"cdr_mode": "bang-bang", "sample_phase_ui": 0.0,
+                                   "kp": 0.05, "ki": 0.001}})
+    rng = np.random.default_rng(0)
+    for _ in range(3):
+        r = TRAN.run_batch(p, n_symbols=80_000, sbr=sbr, v=eye.v, rng=rng)
+    assert abs(r.recovered_phase_ui) < 0.1          # the eye center, not the ±0.5 UI crossing
+    assert r.eye_height_v > 0.0 and r.ser < 1e-2    # eye open + decisions correct
 
 
 def test_static_cdr_uses_the_sample_phase_slider():

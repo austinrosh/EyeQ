@@ -54,6 +54,7 @@ class ReportContext:
     pipe: Any                      # eyeq.core.pipeline.Pipeline
     fec: Any = None                # eyeq.analysis.fec.FecResult (or None when FEC is off)
     detector: Any = None           # the controller's detector config dict (mode, mlsd_taps)
+    jitter: Any = None             # eyeq.analysis.jitter.JitterResult (or None)
 
 
 @dataclass(frozen=True)
@@ -103,6 +104,35 @@ def _target_ber(rc):
 
 def _sample_phase_ui(rc):
     return rc.stats.get("recovered_phase_ui")
+
+
+# -- jitter decomposition (RJ / DJ / DDJ / TJ), in mUI ----------------------- #
+def _rj_mui(rc):
+    return None if rc.jitter is None else rc.jitter.rj_rms_ui * 1e3
+
+
+def _dj_mui(rc):
+    return None if rc.jitter is None else rc.jitter.dj_pp_ui * 1e3
+
+
+def _ddj_mui(rc):
+    return None if rc.jitter is None else rc.jitter.ddj_pp_ui * 1e3
+
+
+def _tj_mui(rc):
+    return None if rc.jitter is None else rc.jitter.tj_ui * 1e3
+
+
+def _rx_rj_mui(rc):
+    return None if rc.jitter is None else rc.jitter.rx_rj_rms_ui * 1e3
+
+
+def _pj_mui(rc):
+    return None if rc.jitter is None else rc.jitter.pj_pp_ui * 1e3
+
+
+def _loop_bw_mhz(rc):
+    return None if rc.jitter is None else rc.jitter.loop_bw_mhz
 
 
 def _eq_state(rc) -> str:
@@ -233,14 +263,31 @@ METRICS: list[Metric] = [
            "the code to deliver the post-FEC target.", _pre_fec_threshold, fmt="{:.2e}"),
     Metric("post_fec_target", "Post-FEC target", "", "Target BER the FEC is designed to deliver "
            "(e.g. 1e-15).", _post_fec_target, fmt="{:.0e}"),
+    # ---- jitter decomposition (TX + RX, RJ / DJ / DDJ -> dual-Dirac TJ) ----
+    Metric("rj", "RJ (rms)", "mUI", "Random (Gaussian) jitter, RMS — TX + RX clock combined in quadrature.",
+           _rj_mui, fmt="{:.1f}"),
+    Metric("rx_rj", "RX RJ (rms)", "mUI", "Receiver sampling-clock random jitter alone (RMS).",
+           _rx_rj_mui, fmt="{:.1f}"),
+    Metric("ddj", "DDJ (pp)", "mUI", "Data-dependent jitter (pp): the ISI-driven zero-crossing spread, "
+           "estimated as worst-case ISI swing / steepest edge slope.", _ddj_mui, fmt="{:.1f}",
+           model_limited=True),
+    Metric("pj", "RX PJ (pp)", "mUI", "Receiver periodic jitter (pp), after CDR tracking |1-H(f_pj)|.",
+           _pj_mui, fmt="{:.1f}", model_limited=True),
+    Metric("dj", "DJ (pp)", "mUI", "Deterministic jitter (pp) = DCD + SJ + PJ + DDJ (periodic terms "
+           "post-CDR-tracking).", _dj_mui, fmt="{:.1f}"),
+    Metric("tj", "TJ @ BER", "mUI", "Total jitter at the target BER (dual-Dirac): "
+           "DJ_pp + 2·Qinv(BER/2)·RJ_rms.", _tj_mui, fmt="{:.1f}", model_limited=True),
+    Metric("cdr_bw", "CDR loop BW", "MHz", "CDR jitter-transfer corner; 0 = no tracking (static slicer). "
+           "Periodic jitter below it is tracked out and does not close the eye.", _loop_bw_mhz, fmt="{:.0f}"),
+    Metric("jtol", "Timing margin", "UI", "Measured horizontal eye opening at the target BER (from the "
+           "timing bathtub) — the realized timing margin, distinct from the dual-Dirac TJ budget above.",
+           _eye_width_ui, fmt="{:.3f}"),
     # ---- deferred compliance metrics: descriptors present, values not yet modeled ----
     Metric("sndr", "SNDR", "dB", "Signal-to-noise-and-distortion ratio (deferred).",
            lambda rc: None, model_limited=True, deferred=True),
     Metric("rlm", "RLM", "", "Ratio of level mismatch / PAM4 linearity (deferred).",
            lambda rc: None, model_limited=True, deferred=True),
     Metric("erl", "ERL", "dB", "Effective return loss (deferred; needs reflection model).",
-           lambda rc: None, model_limited=True, deferred=True),
-    Metric("jtol", "Jitter tolerance", "UI", "Jitter-tolerance margin (deferred; needs DJ/SJ).",
            lambda rc: None, model_limited=True, deferred=True),
 ]
 

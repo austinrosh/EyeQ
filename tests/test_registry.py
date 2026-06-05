@@ -7,7 +7,7 @@ from eyeq.core import BlockBase, registry
 
 EXPECTED = {
     "Source", "TXFFE", "TXJitter", "Channel", "Noise",
-    "CTLE", "RXFFE", "DFE", "CDRSlicer",
+    "CTLE", "RXFFE", "RXJitter", "DFE", "CDRSlicer",
 }
 
 

@@ -14,6 +14,7 @@ from .noise import Noise
 from .ctle import CTLE
 from .rxffe import RXFFE
 from .dfe import DFE
+from .rxjitter import RXJitter
 from .cdr_slicer import CDRSlicer
 
 __all__ = [
@@ -25,5 +26,6 @@ __all__ = [
     "CTLE",
     "RXFFE",
     "DFE",
+    "RXJitter",
     "CDRSlicer",
 ]

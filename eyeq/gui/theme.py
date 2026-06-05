@@ -31,7 +31,7 @@ THEMES: dict[str, dict] = {
         "text": "#1f2328", "muted": "#6e7781", "border": "#d0d7de",
         "accent": "#0d9488", "accent2": "#0891b2", "on_accent": "#ffffff",
         "plot_bg": "#ffffff", "axis": "#57606a", "grid": (0, 0, 0, 30),
-        "heatmap_bg": "#000000",   # heatmaps stay dark even in light mode
+        "heatmap_bg": "#fbfcfe",   # eye/histogram follow the theme (light in light mode)
     },
 }
 

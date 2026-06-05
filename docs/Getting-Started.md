@@ -179,10 +179,18 @@ Click **Report**:
 ![Report](img/report.png)
 
 Each row gives a metric, its unit, a one-line definition, and the live value: pre-FEC BER, SER, COM, eye
-height/width, SNR, target BER, sampling phase, the active EQ/CDR/detector state, and (when enabled) the
-FEC rows (post-FEC BER, scheme, coding gain, pre-FEC threshold). **Greyed rows are model-limited or not
-yet modeled** — EyeQ does not fabricate precision (the deferred SNDR/RLM/ERL/jitter-tolerance metrics
-appear here as "— (not modeled)").
+height/width, SNR, target BER, sampling phase, the active EQ/CDR/detector state, the jitter decomposition
+(TX + RX-clock RJ/DDJ/PJ/DJ/TJ, the CDR loop bandwidth + timing margin), and (when enabled) the FEC rows
+(post-FEC BER, scheme, coding gain, pre-FEC threshold). **Greyed rows are model-limited or not yet
+modeled** — EyeQ does not fabricate precision (the deferred SNDR/RLM/ERL metrics appear here as
+"— (not modeled)").
+
+**Jitter & the CDR.** The `txjitter` block sets transmit jitter (RJ/DCD/SJ) and `rxjitter` the recovered
+sampling clock's jitter (RJ + periodic PJ). In a CDR **tracking** mode (`cdr_mode` = bang-bang or
+mueller-muller) the loop *tracks out* periodic jitter below its `loop_bw_mhz` corner — so a low-frequency
+SJ/PJ barely closes the eye while the same tone above the corner does. Sweep `pj_freq_mhz` across
+`loop_bw_mhz` on the timing bathtub to see the jitter-tolerance corner; in `static` mode there is no clock
+recovery, so all jitter closes the eye.
 
 **Capture & compare:** click **Capture config** to snapshot the current numbers into a new column; then
 change something (toggle an EQ stage, switch the detector, enable FEC) and the report shows the new live
@@ -308,8 +316,8 @@ patterns.
 | **MLSD BER / margin** | Minimum-distance union bound | Optimistic at low SNR; whitened-matched-filter assumption |
 
 EyeQ's guiding principle: a number is shown with its method and its limits. Greyed/"not modeled" entries
-(crosstalk, DJ/SJ, SNDR/RLM/ERL/jitter-tolerance) are genuinely not yet modeled — they are placeholders,
-not zeros. The full derivations and assumptions are in the
+(crosstalk, the swept jitter-tolerance mask, SNDR/RLM/ERL) are genuinely not yet modeled — they are
+placeholders, not zeros. The full derivations and assumptions are in the
 [Technical Reference §16 (Fidelity)](EyeQ-Technical-Reference.md#16-fidelity-assumptions--limitations).
 
 ---

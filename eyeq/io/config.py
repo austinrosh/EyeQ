@@ -36,6 +36,7 @@ _NAME_TO_TYPE: dict[str, str] = {
     "noise": "Noise",
     "ctle": "CTLE",
     "rxffe": "RXFFE",
+    "rxjitter": "RXJitter",
     "dfe": "DFE",
     "cdr_slicer": "CDRSlicer",
 }

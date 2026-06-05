@@ -88,9 +88,8 @@ class TransientEngine:
         sigma_v = self._stat._amplitude_sigma(pipe)  # front-end-referred RX noise
         if sigma_v > 0:
             windows = windows + rng.normal(0.0, sigma_v, windows.shape)
-        rj_ui = self._jitter_ui(pipe)
-        if rj_ui > 0:
-            shift = np.round(rng.normal(0.0, rj_ui * sps, w)).astype(int)
+        shift = self._jitter_shift(pipe, sidx, sps, ctx, rng)
+        if shift is not None:
             cols = (np.arange(sps)[None, :] - shift[:, None]) % sps
             windows = np.take_along_axis(windows, cols, axis=1)
 
@@ -198,8 +197,35 @@ class TransientEngine:
 
     # -- helpers --------------------------------------------------------------
     @staticmethod
-    def _jitter_ui(pipe: Pipeline) -> float:
-        try:
-            return pipe.by_name("txjitter").get("rj_mui") * 1e-3
-        except KeyError:
-            return 0.0
+    def _jitter_shift(pipe: Pipeline, sidx, sps: int, ctx, rng):
+        """Per-trace integer sample shift from TX (data) + RX (clock) jitter; ``None`` if none.
+
+        TX: RJ (Gaussian) + DCD (±half-pp by symbol parity) + SJ (sinusoid at sj_freq).
+        RX: RJ (combined with TX RJ in quadrature) + PJ (sinusoid at pj_freq). The
+        round-to-integer-sample quantization is the coarse-eye limit, and the loop's
+        kp/ki tracking is the time-domain realization; the quantitative jitter numbers
+        and CDR (1-H) shaping come from the statistical engine."""
+        def get(name, *params):
+            try:
+                b = pipe.by_name(name)
+                return [float(b.get(p)) for p in params]
+            except KeyError:
+                return [0.0] * len(params)
+
+        tx_rj, tx_dcd, tx_sj, tx_fsj = get("txjitter", "rj_mui", "dcd_mui", "sj_mui", "sj_freq_mhz")
+        rx_rj, rx_pj, rx_fpj = get("rxjitter", "rj_mui", "pj_mui", "pj_freq_mhz")
+        tx_rj, tx_dcd, tx_sj, rx_rj, rx_pj = (x * 1e-3 for x in (tx_rj, tx_dcd, tx_sj, rx_rj, rx_pj))
+        if max(tx_rj, tx_dcd, tx_sj, rx_rj, rx_pj) <= 0.0:
+            return None
+        t = sidx * ctx.ui
+        shift = np.zeros(sidx.size, dtype=float)
+        rj = float(np.hypot(tx_rj, rx_rj))                           # combined random (quadrature)
+        if rj > 0.0:
+            shift += rng.normal(0.0, rj * sps, sidx.size)
+        if tx_dcd > 0.0:
+            shift += np.where(sidx % 2 == 0, 0.5, -0.5) * tx_dcd * sps   # ±pp/2 by UI parity
+        if tx_sj > 0.0:
+            shift += tx_sj * sps * np.sin(2.0 * np.pi * tx_fsj * 1e6 * t)
+        if rx_pj > 0.0:
+            shift += rx_pj * sps * np.sin(2.0 * np.pi * rx_fpj * 1e6 * t + 1.0)  # +offset: RX PJ ≠ TX SJ
+        return np.round(shift).astype(int)

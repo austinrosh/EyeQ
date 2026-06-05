@@ -15,7 +15,7 @@ def test_canonical_order():
 def test_lti_tail_split():
     pipe = _pipe()
     assert [b.name for b in pipe.lti_prefix()] == [
-        "source", "txffe", "txjitter", "channel", "noise", "ctle", "rxffe",
+        "source", "txffe", "txjitter", "channel", "noise", "ctle", "rxffe", "rxjitter",
     ]
     assert [b.name for b in pipe.nonlinear_tail()] == ["dfe", "cdr_slicer"]
 

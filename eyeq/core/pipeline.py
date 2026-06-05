@@ -33,6 +33,7 @@ CANONICAL_ORDER: list[str] = [
     "noise",
     "ctle",
     "rxffe",
+    "rxjitter",
     "dfe",
     "cdr_slicer",
 ]

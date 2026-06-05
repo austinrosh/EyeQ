@@ -152,9 +152,9 @@ class StatisticalEngine:
         dv = 2.0 * v_peak / v_bins
         v = (np.arange(v_bins) - v_bins // 2) * dv
 
-        # Per-phase noise/jitter sigmas (volts).
+        # Per-phase noise sigma (volts) + timing-jitter components (seconds).
         sigma_amp = self._amplitude_sigma(pipe)
-        sigma_t = self._jitter_sigma_s(pipe, ctx)
+        jit = self._jitter_params(pipe, ctx)
 
         # Cursor offsets m: a symbol that is |m| UI away contributes cursor m.
         # Must match the SBR's cursor convention (k from -pre..+post) exactly, or
@@ -169,13 +169,9 @@ class StatisticalEngine:
         for pi, delta in enumerate(phase_offsets):
             cvals = self._sample_cursors(pulse, m0 + delta, m_range, sps)
             col = self._convolve_cursor_pdfs(cvals, levels, v, dv)
-            # local slope (V per second) at this phase -> jitter as amplitude noise
+            # local slope (V per second) at this phase -> timing jitter as amplitude noise
             slope = self._local_slope(pulse, m0 + delta, ctx.dt)
-            sigma = np.hypot(sigma_amp, abs(slope) * sigma_t)
-            if sigma > 0:
-                col = np.maximum(self._gaussian_blur(col, dv, sigma), 0.0)
-            s = col.sum()
-            pdf[pi] = col / s if s > 0 else col
+            pdf[pi] = self._blur_jitter(col, dv, slope, sigma_amp, jit)
 
         eye_h, best_pi = self._eye_height(pdf, v, sbr.main_cursor, levels)
         pda = self._peak_distortion_eye_height(sbr, levels)
@@ -281,14 +277,86 @@ class StatisticalEngine:
         return sigma * gain
 
     @staticmethod
-    def _jitter_sigma_s(pipe: Pipeline, ctx) -> float:
-        rj_mui = 0.0
-        for name in ("txjitter",):
+    def _jitter_params(pipe: Pipeline, ctx):
+        """Combined TX + RX timing jitter (seconds): ``(rj_rms, dcd_pp, [periodic_amps])``.
+
+        TX (data-edge) and RX (sampling-clock) jitter combine: **RJ** in quadrature
+        (broadband, fully eye-closing); **DCD** from TX; the **periodic** components
+        (TX SJ at f_sj, RX PJ at f_pj) each scaled by the CDR error response
+        ``|1-H(f)|`` (``cdr_slicer.error_response``) — low-frequency periodic jitter is
+        tracked out, so only the part above the loop bandwidth survives. In static CDR
+        mode |1-H|=1 and this reduces to the TX-only RJ/DCD/SJ of before."""
+        def get(name, *params):
             try:
-                rj_mui = max(rj_mui, pipe.by_name(name).get("rj_mui"))
+                b = pipe.by_name(name)
+                return [float(b.get(p)) for p in params]
             except KeyError:
-                pass
-        return rj_mui * 1e-3 * ctx.ui
+                return [0.0] * len(params)
+
+        tx_rj, tx_dcd, tx_sj, tx_fsj = get("txjitter", "rj_mui", "dcd_mui", "sj_mui", "sj_freq_mhz")
+        rx_rj, rx_pj, rx_fpj = get("rxjitter", "rj_mui", "pj_mui", "pj_freq_mhz")
+        try:
+            cdr = pipe.by_name("cdr_slicer")
+            h_tx, h_rx = cdr.error_response(tx_fsj * 1e6), cdr.error_response(rx_fpj * 1e6)
+        except KeyError:
+            h_tx = h_rx = 1.0
+
+        s = 1e-3 * ctx.ui
+        rj_s = float(np.hypot(tx_rj, rx_rj)) * s
+        dcd_s = tx_dcd * s
+        periodic = [a * s for a in (tx_sj * h_tx, rx_pj * h_rx) if a > 0.0]
+        return rj_s, dcd_s, periodic
+
+    def _blur_jitter(self, col, dv, slope, sigma_amp, jit) -> NDArray:
+        """Blur an amplitude PDF by amplitude noise + RJ (Gaussian, in quadrature),
+        then convolve the bounded DCD (2-Dirac) and each periodic (arcsine) timing
+        jitter component, slope-converted to volts. Returns a normalized column. With
+        no DCD and one full-amplitude SJ this is exactly the old RJ/DCD/SJ math."""
+        rj_s, dcd_s, periodic_s = jit
+        out = col
+        sigma_g = float(np.hypot(sigma_amp, abs(slope) * rj_s))
+        if sigma_g > 0.0:
+            out = np.maximum(self._gaussian_blur(out, dv, sigma_g), 0.0)
+        sl = abs(float(slope))
+        if dcd_s > 0.0 and sl * dcd_s > dv:                 # DCD: ± half-pp in volts
+            out = self._convolve_kernel(out, self._dcd_kernel(out.size, dv, sl * dcd_s))
+        for amp_s in periodic_s:                            # SJ / PJ: arcsine of amplitude in volts
+            if sl * amp_s > dv:
+                out = self._convolve_kernel(out, self._arcsine_kernel(out.size, dv, sl * amp_s))
+        s = out.sum()
+        return out / s if s > 0 else out
+
+    @staticmethod
+    def _convolve_kernel(col, kernel) -> NDArray:
+        """Circular convolution with a zero-centered kernel (peak at index n//2),
+        ifftshift'd like :meth:`_gaussian_blur` so there is no net shift."""
+        K = np.fft.fft(np.fft.ifftshift(kernel))
+        return np.maximum(np.fft.ifft(np.fft.fft(col) * K).real, 0.0)
+
+    @staticmethod
+    def _dcd_kernel(n, dv, pp_v) -> NDArray:
+        """Zero-centered 2-Dirac at ±pp_v/2 (duty-cycle distortion), grid-interpolated."""
+        k = np.zeros(n)
+        for sign in (-1.0, 1.0):
+            pos = sign * 0.5 * pp_v / dv + n // 2
+            i = int(np.floor(pos))
+            frac = pos - i
+            if 0 <= i < n:
+                k[i] += 0.5 * (1.0 - frac)
+            if 0 <= i + 1 < n:
+                k[i + 1] += 0.5 * frac
+        return k
+
+    @staticmethod
+    def _arcsine_kernel(n, dv, amp_v) -> NDArray:
+        """Zero-centered arcsine PDF over [-amp_v, amp_v] (sinusoidal jitter), built by
+        binning the arcsine CDF F(u)=1/2+asin(u)/pi so the endpoint mass is captured."""
+        x = (np.arange(n) - n // 2) * dv
+        lo = np.clip((x - 0.5 * dv) / amp_v, -1.0, 1.0)
+        hi = np.clip((x + 0.5 * dv) / amp_v, -1.0, 1.0)
+        k = (np.arcsin(hi) - np.arcsin(lo)) / np.pi
+        s = k.sum()
+        return k / s if s > 0 else k
 
     @staticmethod
     def _peak_distortion_eye_height(sbr: SbrResult, levels) -> float:

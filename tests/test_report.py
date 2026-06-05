@@ -54,7 +54,7 @@ def test_active_eq_reflects_bypass_flags():
 
 def test_deferred_metrics_render_not_modeled():
     rows = {r.key: r for r in report.evaluate(_context())}
-    for key in ("sndr", "rlm", "erl", "jtol"):
+    for key in ("sndr", "rlm", "erl"):
         assert rows[key].value == "— (not modeled)"
         assert rows[key].model_limited
 
